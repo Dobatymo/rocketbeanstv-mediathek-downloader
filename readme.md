@@ -12,10 +12,11 @@ For 1080p support you also need FFmpeg <https://www.ffmpeg.org/download.html> or
 
 ### `rbtv-mediathek.pyz download --help`
 ```
-usage: __main__.py download [-h]
+usage: rbtv-mediathek.pyz download [-h]
                             (--episode-id EPISODE_ID | --season-id SEASON_ID | --show-id SHOW_ID)
-                            [--basepath BASEPATH] [--outdirtpl OUTDIRTPL]
-                            [--outtmpl OUTTMPL] [--format FORMAT]
+                            [--unsorted-only] [--basepath BASEPATH]
+                            [--outdirtpl OUTDIRTPL] [--outtmpl OUTTMPL]
+                            [--format FORMAT] [--missing-value MISSING_VALUE]
 
 optional arguments:
   -h, --help            show this help message and exit
@@ -24,6 +25,9 @@ optional arguments:
   --season-id SEASON_ID
                         Download all episodes of this season (default: None)
   --show-id SHOW_ID     Download all episodes of this show (default: None)
+  --unsorted-only       Only valid in combination with --show-id. Downloads
+                        only unsorted episodes (episodes which are not
+                        categorized into seasons). (default: False)
   --basepath BASEPATH   Base output folder (default: .)
   --outdirtpl OUTDIRTPL
                         Output folder relative to base folder. Can include the
@@ -39,14 +43,24 @@ optional arguments:
                         with fallback to 'best'. See youtube-dl format
                         selection: https://github.com/ytdl-org/youtube-
                         dl#format-selection (default: None)
+  --missing-value MISSING_VALUE
+                        Value used for --outdirtpl if field is not available.
+                        (default: -)
 ```
 
-Example: `rbtv-mediathek.pyz download --show-id 99 --basepath "C:/Download/RBTV" --format "22/best"`
-This will download all episodes for the show "After Dark" in 720p mp4 format (or next best if not available) to `C:/Download/RBTV` with subfolders per show and season (eg. `G:\PUBLIC_ARCHIVE\Rocket Beans TV\After Dark\Resident Evil Code - Veronica X`).
+#### Examples
+
+- `rbtv-mediathek.pyz download --show-id 99 --basepath "C:/Download/RBTV" --format "22/best"`
+
+This will download all episodes for the show "After Dark" in 720p mp4 format (or next best if not available) to `C:/Download/RBTV` with subfolders per show and season (eg. `C:\Download\RBTV\After Dark\Resident Evil Code - Veronica X`).
+
+- `rbtv-mediathek.pyz download --show 112 --unsorted --outdirtpl ""`
+
+This will download only unsorted episodes for the show "Kino+" to the current directory without subfolders.
 
 ### `rbtv-mediathek.pyz browse --help`
 ```
-usage: __main__.py browse [-h]
+usage: rbtv-mediathek.pyz browse [-h]
                           (--episode-id EPISODE_ID | --season-id SEASON_ID | --show-id SHOW_ID)
 
 optional arguments:
@@ -60,8 +74,7 @@ optional arguments:
 
 ## Missing features (which I intend to implement in the future)
 
-- Does not download episodes belonging to show if they don't belong to a season
-- Does not retry failed download
+- Does not retry failed downloads
 - Download episodes by host
 - Download episodes by show/season name instead of ID
 - Events
