@@ -37,7 +37,8 @@ def opt_int(s):
 
 class RBTVDownloader(object):
 
-	def __init__(self, basepath=DEFAULT_BASEPATH, outdirtpl=DEFAULT_OUTDIRTPL, outtmpl=DEFAULT_OUTTMPL, format=DEFAULT_FORMAT, missing_value=DEFAULT_MISSING_VALUE):
+	def __init__(self, basepath=DEFAULT_BASEPATH, outdirtpl=DEFAULT_OUTDIRTPL, outtmpl=DEFAULT_OUTTMPL,
+		format=DEFAULT_FORMAT, missing_value=DEFAULT_MISSING_VALUE, record_path=None):
 		# type: (Path, str, str, str, str) -> None
 
 		self.basepath = basepath
@@ -46,7 +47,34 @@ class RBTVDownloader(object):
 		self.format = format
 		self.missing_value = missing_value
 
+		if record_path:
+			try:
+				with open(record_path, "r", encoding="utf-8") as fr:
+					self.downloaded_episodes = set(int(episode_id.rstrip("\n")) for episode_id in fr if episode_id)
+			except FileNotFoundError:
+				self.downloaded_episodes = set()
+			self.record_file = open(record_path, "a", encoding="utf-8")
+		else:
+			self.downloaded_episodes = set()
+			self.record_file = None
+
 		self.api = RBTVAPI()
+
+	def close(self):
+		if self.record_file:
+			self.record_file.close()
+
+	def __enter__(self):
+		return self
+
+	def __exit__(self, *args):
+		self.close()
+
+	def _record_id(self, episode_id):
+		self.downloaded_episodes.add(episode_id)
+		if self.record_file:
+			self.record_file.write("{}\n".format(episode_id))
+			self.record_file.flush()
 
 	def _parse_broadcast_date(self, datestr):
 		# type: (Optional[str], ) -> tuple
@@ -64,9 +92,14 @@ class RBTVDownloader(object):
 			return (self.missing_value, ) * 6
 
 	def _download_episode(self, episode):
-		# type: (dict, ) -> None
+		# type: (dict, ) -> bool
 
 		in_season = "seasonId" in episode
+		episode_id = int(episode["id"])
+
+		if episode_id in self.downloaded_episodes:
+			logging.info("Episode %s was already downloaded", episode_id)
+			return False
 
 		if in_season:
 			logging.debug("Downloading show=%s season=%s episode=%s", episode["showId"], episode["seasonId"], episode["id"])
@@ -91,7 +124,7 @@ class RBTVDownloader(object):
 			"season_id": season_id,
 			"season_name": season_name or self.missing_value,
 			"season_number": season_number or self.missing_value,
-			"episode_id": int(episode["id"]),
+			"episode_id": episode_id,
 			"episode_name": sanitize_filename(episode["title"]) or self.missing_value,
 			"episode_number": opt_int(episode["episode"]) or self.missing_value,
 			"year": year,
@@ -111,11 +144,18 @@ class RBTVDownloader(object):
 			urls = list(youtube_tokens_to_urls(episode["youtubeTokens"]))
 			try:
 				ydl.download(urls)
+				self._record_id(episode_id)
+				return True
 			except DownloadError as e:
-				if e.args[0].startswith("ERROR: Unsupported URL"): # UnsupportedError
+				errmsg = e.args[0]
+				if errmsg.startswith("ERROR: Unsupported URL"): # UnsupportedError
 					logging.exception("Downloading episode id=%s (%r) is not supported", episode["id"], episode["youtubeTokens"])
-				elif e.args[0].startswith("ERROR: Incomplete YouTube ID"): # ExtractorError
+				elif errmsg.startswith("ERROR: Incomplete YouTube ID"): # ExtractorError
 					logging.exception("YouTube ID of episode id=%s (%r) looks incomplete", episode["id"], episode["youtubeTokens"])
+				elif errmsg.startswith("ERROR: Did not get any data blocks"):
+					logging.exception("Downloading episode id=%s (%r) failed. YouTube did not return data.", episode["id"], episode["youtubeTokens"])
+				elif errmsg.startswith("ERROR: unable to download video data"):
+					logging.exception("Downloading episode id=%s (%r) failed. YouTube did not return data.", episode["id"], episode["youtubeTokens"])
 				else:
 					raise
 
@@ -148,12 +188,39 @@ class RBTVDownloader(object):
 				for episode in ep_combined["episodes"]:
 					self._download_episode(episode)
 
+	def _preprocess(self, name):
+		# type: (str, ) -> str
+
+		return name.replace(" ", "").lower() # make show name matching independent of whitespace and casing
+
+	def _show_name_to_id(self, show_name):
+		# type: (str, ) -> int
+
+		d = {self._preprocess(show["title"]): int(show["id"]) for show in self.api.get_shows_mini()}
+		try:
+			return d[self._preprocess(show_name)]
+		except KeyError:
+			raise ValueError("Could not find show {}".format(show_name))
+
+	def download_show_by_name(self, show_name, unsorted_only=False):
+		# type: (str, bool) -> None
+
+		show_id = self._show_name_to_id(show_name)
+		self.download_show(show_id, unsorted_only)
+
+	def download_all_shows(self, unsorted_only=False):
+		for show in self.api.get_shows_mini():
+			show_id = show["id"]
+			self.download_show(show_id, unsorted_only)
+
 if __name__ == "__main__":
 
 	from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
 
+	show_params = "--show-id, --show-name or --all-shows"
+
 	parser = ArgumentParser(
-		description="Simple downloader for the Rocket Beans TV Mediathek.",
+		description="Simple downloader and browser for the Rocket Beans TV Mediathek.",
 		formatter_class=ArgumentDefaultsHelpFormatter
 	)
 	parser.add_argument("-v", "--verbose", action="store_true")
@@ -165,18 +232,22 @@ if __name__ == "__main__":
 	group.add_argument("--episode-id", type=int, help="Download this episode")
 	group.add_argument("--season-id", type=int, help="Download all episodes of this season")
 	group.add_argument("--show-id", type=int, help="Download all episodes of this show")
-	parser_a.add_argument("--unsorted-only", action="store_true", help="Only valid in combination with --show-id. Downloads only unsorted episodes (episodes which are not categorized into seasons).")
+	group.add_argument("--show-name", type=str, help="Download all episodes of this show")
+	group.add_argument("--all-shows", action="store_true", help="Download all episodes of all shows")
+	parser_a.add_argument("--unsorted-only", action="store_true", help="Only valid in combination with {}. Downloads only unsorted episodes (episodes which are not categorized into seasons).".format(show_params))
 	parser_a.add_argument("--basepath", type=Path, default=DEFAULT_BASEPATH, help="Base output folder")
 	parser_a.add_argument("--outdirtpl", default=DEFAULT_OUTDIRTPL, help="Output folder relative to base folder. Can include the following placeholders: {}".format(", ".join(OUTDIRTPL_KEYS)))
 	parser_a.add_argument("--outtmpl", default=DEFAULT_OUTTMPL, help="Output file path relative to output folder. See youtube-dl output template: https://github.com/ytdl-org/youtube-dl#output-template")
 	parser_a.add_argument("--format", default=DEFAULT_FORMAT, help="Video/audio format. Defaults to 'bestvideo+bestaudio' with fallback to 'best'. See youtube-dl format selection: https://github.com/ytdl-org/youtube-dl#format-selection")
 	parser_a.add_argument("--missing-value", default=DEFAULT_MISSING_VALUE, help="Value used for --outdirtpl if field is not available.")
+	parser_a.add_argument("--record-path", default=None, type=Path, help="File path where successful downloads are recorded. These episodes will be skipped if downloaded again.")
 
 	parser_b = subparsers.add_parser("browse", help="browse mediathek", formatter_class=ArgumentDefaultsHelpFormatter)
 	group = parser_b.add_mutually_exclusive_group(required=True)
 	group.add_argument("--episode-id", type=int, help="Show episode info")
 	group.add_argument("--season-id", type=int, help="Show season info")
 	group.add_argument("--show-id", type=int, help="Show show info")
+	group.add_argument("--all-shows", action="store_true", help="Show a list of all shows")
 
 	args = parser.parse_args()
 
@@ -187,17 +258,21 @@ if __name__ == "__main__":
 
 	if args.command == "download":
 
-		if args.unsorted_only and not args.show_id:
-			parser.error("--unsorted-only must be used together with --show-id")
+		if args.unsorted_only and not (args.show_id or args.show_name or args.all_shows):
+			parser.error("--unsorted-only must be used together with {}".format(show_params))
 
-		rbtv = RBTVDownloader(args.basepath, args.outdirtpl, args.outtmpl, args.format, args.missing_value)
+		with RBTVDownloader(args.basepath, args.outdirtpl, args.outtmpl, args.format, args.missing_value, args.record_path) as rbtv:
 
-		if args.episode_id:
-			rbtv.download_episode(args.episode_id)
-		elif args.season_id:
-			rbtv.download_season(args.season_id)
-		elif args.show_id:
-			rbtv.download_show(args.show_id, args.unsorted_only)
+			if args.episode_id:
+				rbtv.download_episode(args.episode_id)
+			elif args.season_id:
+				rbtv.download_season(args.season_id)
+			elif args.show_id:
+				rbtv.download_show(args.show_id, args.unsorted_only)
+			elif args.show_name:
+				rbtv.download_show_by_name(args.show_name, args.unsorted_only)
+			elif args.all_shows:
+				rbtv.download_all_shows(args.unsorted_only)
 
 	if args.command == "browse":
 
@@ -224,3 +299,7 @@ if __name__ == "__main__":
 				print("id={} #{} {}".format(season["id"], season["numeric"], season["name"]))
 			if not show["seasons"]:
 				print("This show doesn't not have any seasons")
+
+		elif args.all_shows:
+			for show in api.get_shows_mini():
+				print("id={} {}".format(show["id"], show["title"]))
