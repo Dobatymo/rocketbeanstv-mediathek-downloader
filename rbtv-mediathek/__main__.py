@@ -6,6 +6,8 @@ from youtube_dl import YoutubeDL, DEFAULT_OUTTMPL
 from youtube_dl.utils import sanitize_filename, DownloadError
 from rbtv import RBTVAPI, name_of_season
 
+__version__ = "0.2"
+
 DEFAULT_BASEPATH = Path(".")
 DEFAULT_OUTDIRTPL = "{show_name}/{season_name}"
 DEFAULT_MISSING_VALUE = "-"
@@ -188,30 +190,30 @@ class RBTVDownloader(object):
 				for episode in ep_combined["episodes"]:
 					self._download_episode(episode)
 
-	def _preprocess(self, name):
-		# type: (str, ) -> str
-
-		return name.replace(" ", "").lower() # make show name matching independent of whitespace and casing
-
-	def _show_name_to_id(self, show_name):
-		# type: (str, ) -> int
-
-		d = {self._preprocess(show["title"]): int(show["id"]) for show in self.api.get_shows_mini()}
-		try:
-			return d[self._preprocess(show_name)]
-		except KeyError:
-			raise ValueError("Could not find show {}".format(show_name))
-
 	def download_show_by_name(self, show_name, unsorted_only=False):
 		# type: (str, bool) -> None
 
-		show_id = self._show_name_to_id(show_name)
+		show_id = self.api.show_name_to_id(show_name)
 		self.download_show(show_id, unsorted_only)
 
 	def download_all_shows(self, unsorted_only=False):
 		for show in self.api.get_shows_mini():
 			show_id = show["id"]
 			self.download_show(show_id, unsorted_only)
+
+	def download_bohne(self, bohne_id):
+		# type: (int, ) -> None
+
+		for ep_combined in self.api.get_episodes_by_bohne(bohne_id):
+			for episode in ep_combined["episodes"]:
+				self._download_episode(episode)
+
+	def download_bohne_by_name(self, bohne_name):
+		# type: (str, ) -> None
+
+		bohne_id = self.api.bohne_name_to_id(bohne_name)
+		self.download_bohne(bohne_id)
+
 
 if __name__ == "__main__":
 
@@ -234,6 +236,8 @@ if __name__ == "__main__":
 	group.add_argument("--show-id", type=int, help="Download all episodes of this show")
 	group.add_argument("--show-name", type=str, help="Download all episodes of this show")
 	group.add_argument("--all-shows", action="store_true", help="Download all episodes of all shows")
+	group.add_argument("--bohne-id", type=int, help="Download all episodes by Bohne")
+	group.add_argument("--bohne-name", type=str, help="Download all episodes by Bohne")
 	parser_a.add_argument("--unsorted-only", action="store_true", help="Only valid in combination with {}. Downloads only unsorted episodes (episodes which are not categorized into seasons).".format(show_params))
 	parser_a.add_argument("--basepath", type=Path, default=DEFAULT_BASEPATH, help="Base output folder")
 	parser_a.add_argument("--outdirtpl", default=DEFAULT_OUTDIRTPL, help="Output folder relative to base folder. Can include the following placeholders: {}".format(", ".join(OUTDIRTPL_KEYS)))
@@ -247,7 +251,12 @@ if __name__ == "__main__":
 	group.add_argument("--episode-id", type=int, help="Show episode info")
 	group.add_argument("--season-id", type=int, help="Show season info")
 	group.add_argument("--show-id", type=int, help="Show show info")
+	group.add_argument("--show-name", type=str, help="Show show info")
 	group.add_argument("--all-shows", action="store_true", help="Show a list of all shows")
+	group.add_argument("--bohne-id", type=int, help="Show bohne info")
+	group.add_argument("--bohne-name", type=str, help="Show bohne info")
+	group.add_argument("--all-bohnen", action="store_true", help="Show a list of all Bohnen")
+	parser_b.add_argument("--preview", action="store_true", help="Don't output full information. Much faster.")
 
 	args = parser.parse_args()
 
@@ -273,6 +282,10 @@ if __name__ == "__main__":
 				rbtv.download_show_by_name(args.show_name, args.unsorted_only)
 			elif args.all_shows:
 				rbtv.download_all_shows(args.unsorted_only)
+			elif args.bohne_id:
+				rbtv.download_bohne(args.bohne_id)
+			elif args.bohne_name:
+				rbtv.download_bohne_by_name(args.bohne_name)
 
 	if args.command == "browse":
 
@@ -289,8 +302,14 @@ if __name__ == "__main__":
 				for episode in ep_combined["episodes"]:
 					print("id={} #{} {}".format(episode["id"], episode["episode"], episode["title"]))
 
-		elif args.show_id:
-			show = api.get_show(args.show_id)
+		elif args.show_id or args.show_name:
+
+			if args.show_name:
+				show_id = api.show_name_to_id(args.show_name)
+			else:
+				show_id = args.show_id
+
+			show = api.get_show(show_id)
 			print("{} (genre={})".format(show["title"], show["genre"]))
 			if show["hasUnsortedEpisodes"]:
 				print("This show contains episodes which are not categorized into a season")
@@ -303,3 +322,26 @@ if __name__ == "__main__":
 		elif args.all_shows:
 			for show in api.get_shows_mini():
 				print("id={} {}".format(show["id"], show["title"]))
+
+		elif args.bohne_id or args.bohne_name:
+
+			if args.bohne_name:
+				bohne_id = api.bohne_name_to_id(args.bohne_name)
+			else:
+				bohne_id = args.bohne_id
+
+			bohne = api.get_bohne_portrait(bohne_id)
+			print("{} (episodes={})".format(bohne["name"], bohne["episodeCount"]))
+
+			if args.preview:
+				for episode in api.get_episodes_by_bohne_preview(bohne_id)["episodes"]:
+					print("id={} {}".format(episode["id"], episode["title"]))
+
+			else:
+				for ep_combined in api.get_episodes_by_bohne(bohne_id):
+					for episode in ep_combined["episodes"]:
+						print("id={} #{} {}".format(episode["id"], episode["episode"], episode["title"]))
+
+		elif args.all_bohnen:
+			for bohne in api.get_bohnen_portraits():
+				print("id={} {}".format(bohne["mgmtid"], bohne["name"]))
