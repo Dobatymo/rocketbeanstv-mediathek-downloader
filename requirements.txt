@@ -1,2 +1,2 @@
-rbtv-api>=0.0.2
+rbtv-api>=0.0.4
 youtube-dl
