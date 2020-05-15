@@ -80,7 +80,7 @@ This will download only unsorted episodes for the show "Kino+" to the current di
 
 Download all episodes with Simon.
 
-- `rbtv-mediathek.pyz download --bohne-name "Gregor"` --outdirtpl "{year}" --outtmpl "{episode_id}-{episode_part}.%(ext)s"`
+- `rbtv-mediathek.pyz download --bohne-name "Gregor" --outdirtpl "{year}" --outtmpl "{episode_id}-{episode_part}.%(ext)s"`
 
 Download all episodes with Gregor, sort them by release year and use the episode id and part for the filename.
 
