@@ -37,7 +37,8 @@ def youtube_token_to_url(token):
 def one(seq):
 	# type: (Sequence[T], ) -> T
 
-	assert len(seq) == 1
+	if len(seq) != 1:
+		raise ValueError("Input must be of length 1")
 	return seq[0]
 
 def opt_int(s):
