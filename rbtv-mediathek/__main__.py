@@ -300,6 +300,7 @@ def main():
 		formatter_class=ArgumentDefaultsHelpFormatter
 	)
 	parser.add_argument("-v", "--verbose", action="store_true")
+	parser.add_argument("--version", action="version", version=__version__)
 	subparsers = parser.add_subparsers(dest="command")
 	subparsers.required = True
 
