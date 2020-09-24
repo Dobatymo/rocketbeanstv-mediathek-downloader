@@ -12,7 +12,7 @@ from rbtv import RBTVAPI, name_of_season, batch_iter, parse_datetime
 if TYPE_CHECKING:
 	from typing import Optional, Tuple
 
-__version__ = "0.3"
+__version__ = "0.4"
 
 DEFAULT_BASEPATH = Path(".")
 DEFAULT_OUTDIRTPL = "{show_name}/{season_name}"
@@ -92,15 +92,15 @@ class RBTVDownloader(object):
 	def __exit__(self, *args):
 		self.close()
 
-	@staticmethod
-	def _parse_record_file(path):
+	@classmethod
+	def _parse_record_file(cls, path):
 		# type: (str, ) -> Iterator[Union[int, Tuple[int, int]]]
 
 		try:
 			with open(path, "r", encoding="utf-8") as fr:
 				for line in fr:
 					episode_id, episode_part = line.rstrip("\n").split(" ")
-					if episode_part == self.all:
+					if episode_part == cls.all:
 						yield int(episode_id)
 					else:
 						yield int(episode_id), int(episode_part)
@@ -130,7 +130,7 @@ class RBTVDownloader(object):
 	def _download_episode(self, episode):
 		# type: (dict, ) -> bool
 
-		in_season = "seasonId" in episode
+		in_season = bool(episode.get("seasonId"))
 		episode_id = int(episode["id"])
 
 		if self._check_record(episode_id):
@@ -199,23 +199,29 @@ class RBTVDownloader(object):
 				"writesubtitles": self.writesubtitles,
 			}
 
+			errors = {
+				r"ERROR: Unsupported URL": lambda: logging.error("Downloading episode id=%s (%s) is not supported", episode["id"], url),  # UnsupportedError
+				r"ERROR: Incomplete YouTube ID": lambda: logging.error("YouTube ID of episode id=%s (%s) looks incomplete", episode["id"], youtube_token),  # ExtractorError
+				r"ERROR: Did not get any data blocks": lambda: logging.error("Downloading episode id=%s (%s) failed. Did not get any data blocks.", episode["id"], url),
+				r"ERROR: [a-zA-Z0-9\-_]+: YouTube said: Unable to extract video data": lambda: logging.error("Downloading episode id=%s (%s) failed. Unable to extract video data.", episode["id"], url),  # ExtractorError
+				r"ERROR: unable to download video data": lambda: logging.error("Downloading episode id=%s (%s) failed. Unable to download video data.", episode["id"], url),  # ExtractorError
+			}
+
 			with YoutubeDL(ydl_opts) as ydl:
 				try:
 					ydl.download([url])
-					self._record_id(episode_id, episode_part)
 				except DownloadError as e:
 					all_done = False
 					errmsg = e.args[0]
-					if errmsg.startswith("ERROR: Unsupported URL"): # UnsupportedError
-						logging.exception("Downloading episode id=%s (%s) is not supported", episode["id"], url)
-					elif errmsg.startswith("ERROR: Incomplete YouTube ID"): # ExtractorError
-						logging.exception("YouTube ID of episode id=%s (%s) looks incomplete", episode["id"], youtube_token)
-					elif errmsg.startswith("ERROR: Did not get any data blocks"):
-						logging.exception("Downloading episode id=%s (%s) failed. YouTube did not return data.", episode["id"], url)
-					elif errmsg.startswith("ERROR: unable to download video data"):
-						logging.exception("Downloading episode id=%s (%s) failed. YouTube did not return data.", episode["id"], url)
+
+					for pat, logfunc in errors.items():
+						if re.match(pat, errmsg):
+							logfunc()
+							break
 					else:
 						raise
+				else:
+					self._record_id(episode_id, episode_part)
 
 		if all_done:
 			self._record_id(episode_id)
