@@ -2,7 +2,8 @@ import logging, re, json
 from datetime import datetime
 from pathlib import Path
 from itertools import islice
-from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
+from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter, ArgumentTypeError
+from collections import defaultdict
 from typing import TYPE_CHECKING
 
 from youtube_dl import YoutubeDL, DEFAULT_OUTTMPL
@@ -49,6 +50,17 @@ def opt_int(s):
 	else:
 		return int(s)
 
+def posint(s):
+	# type: (str, ) -> int
+
+	number = int(s)
+
+	if number <= 0:
+		msg = "{0} is not strictly greater than 0".format(s)
+		raise ArgumentTypeError(msg)
+
+	return number
+
 def episode_iter(eps_combined):
 	return batch_iter(eps_combined, "episodes")
 
@@ -71,7 +83,7 @@ class RBTVDownloader(object):
 
 		if record_path:
 			self.downloaded_episodes = set(self._parse_record_file(record_path))
-			self.record_file = open(record_path, "a", encoding="utf-8")
+			self.record_file = open(record_path, "a", encoding="utf-8")  # type: Optional[TextIO]
 		else:
 			self.downloaded_episodes = set()
 			self.record_file = None
@@ -151,8 +163,8 @@ class RBTVDownloader(object):
 		if in_season:
 			season = self.api.get_season(episode["showId"], episode["seasonId"])
 			season_id = int(episode["seasonId"])
-			season_name = sanitize_filename(name_of_season(season))
-			season_number = opt_int(season["numeric"])
+			season_name = sanitize_filename(name_of_season(season))  # type: Optional[str]
+			season_number = opt_int(season["numeric"])  # type: Optional[int]
 		else:
 			season_id = self.missing_value
 			season_name = None
@@ -228,6 +240,12 @@ class RBTVDownloader(object):
 
 		return True
 
+	def _download_episodes(self, episodes):
+		# type: (Iterable[dict], ) -> None
+
+		for episode in episodes:
+			self._download_episode(episode)
+
 	def download_episode(self, episode_id):
 		# type: (int, ) -> None
 
@@ -265,17 +283,62 @@ class RBTVDownloader(object):
 			show_id = show["id"]
 			self.download_show(show_id, unsorted_only)
 
-	def download_bohne(self, bohne_id):
-		# type: (int, ) -> None
+	def _iter_episodes_for_bohnen(self, bohne_ids):
+		# type: (Iterable[int], ) -> Iterator[dict]
 
-		for episode in episode_iter(self.api.get_episodes_by_bohne(bohne_id)):
-			self._download_episode(episode)
+		for bohne_id in bohne_ids:
+			for episode in episode_iter(self.api.get_episodes_by_bohne(bohne_id)):
+				yield episode
 
-	def download_bohne_by_name(self, bohne_name):
-		# type: (str, ) -> None
+	@staticmethod
+	def filter_sets(bohnen, bohne_ids, num, exclusive):
+		# type: (Dict[int, Set[int]], Set[int], int, bool) -> Iterator[int]
 
-		bohne_id = self.api.bohne_name_to_id(bohne_name)
-		self.download_bohne(bohne_id)
+		for episode_id, ids in bohnen.items():
+			if len(bohne_ids & ids) >= num: # at last n people are in this episode
+				if not exclusive or not (ids - bohne_ids): # nobody else in this episode if exclusive
+					yield episode_id
+
+	def _get_episodes_for_bohnen(self, bohne_ids, num, exclusive):
+		# type: (Set[int], int, bool) -> Iterable[dict]
+
+		if num == 1 and not exclusive: # low memory fast path for common options
+			return self._iter_episodes_for_bohnen(bohne_ids)
+		else:
+			episodes = {}  # type: Dict[int, dict]
+
+			for bohne_id in bohne_ids:
+				for episode in episode_iter(self.api.get_episodes_by_bohne(bohne_id)):
+					episode_id = int(episode["id"])
+					episodes[episode_id] = episode
+
+			bohnen = {ep_id: set(ep["hosts"]) for ep_id, ep in episodes.items()}
+
+			return [episodes[episode_id] for episode_id in self.filter_sets(bohnen, bohne_ids, num, exclusive)]
+
+	def _print_episodes(self, episodes):
+		# type: (Iterable[dict], ) -> None
+
+		for episode in episodes:
+			episode_id = int(episode["id"])
+			title = episode["title"]
+			hosts = [self.api.bohne_id_to_name(bohne_id) for bohne_id in episode["hosts"]]
+			print(episode_id, title, hosts)
+
+	def download_bohnen(self, bohne_ids, num=1, exclusive=False, dry=False):
+		# type: (Iterable[int], int, bool, bool) -> None
+
+		episodes = self._get_episodes_for_bohnen(set(bohne_ids), num, exclusive)
+		if dry:
+			self._print_episodes(episodes)
+		else:
+			self._download_episodes(episodes)
+
+	def download_bohnen_by_name(self, bohne_names, num=1, exclusive=False, dry=False):
+		# type: (Iterable[str], int, bool, bool) -> None
+
+		bohne_ids = [self.api.bohne_name_to_id(bohne_name) for bohne_name in bohne_names]
+		self.download_bohnen(bohne_ids, num, exclusive, dry)
 
 	def download_blog_post(self, blog_id):
 		# type: (int, ) -> None
@@ -300,6 +363,7 @@ def main():
 	# type: () -> None
 
 	show_params = "--show-id, --show-name or --all-shows"
+	bohne_params = "--bohne-id or --bohne-name"
 
 	parser = ArgumentParser(
 		description="Simple downloader and browser for the Rocket Beans TV Mediathek.",
@@ -312,16 +376,18 @@ def main():
 
 	parser_a = subparsers.add_parser("download", help="download files", formatter_class=ArgumentDefaultsHelpFormatter)
 	group = parser_a.add_mutually_exclusive_group(required=True)
-	group.add_argument("--episode-id", metavar="ID", nargs="+", type=int, help="Download this episode")
-	group.add_argument("--season-id", metavar="ID", nargs="+", type=int, help="Download all episodes of this season")
-	group.add_argument("--show-id", metavar="ID", nargs="+", type=int, help="Download all episodes of this show")
-	group.add_argument("--show-name", metavar="NAME", nargs="+", type=str, help="Download all episodes of this show")
+	group.add_argument("--episode-id", metavar="ID", nargs="+", type=int, help="Download these episodes")
+	group.add_argument("--season-id", metavar="ID", nargs="+", type=int, help="Download all episodes of these seasons")
+	group.add_argument("--show-id", metavar="ID", nargs="+", type=int, help="Download all episodes of these shows")
+	group.add_argument("--show-name", metavar="NAME", nargs="+", type=str, help="Download all episodes of these shows")
 	group.add_argument("--all-shows", action="store_true", help="Download all episodes of all shows")
-	group.add_argument("--bohne-id", metavar="ID", nargs="+", type=int, help="Download all episodes by Bohne")
-	group.add_argument("--bohne-name", metavar="NAME", nargs="+", type=str, help="Download all episodes by Bohne")
+	group.add_argument("--bohne-id", metavar="ID", nargs="+", type=int, help="Download all episodes by these people")
+	group.add_argument("--bohne-name", metavar="NAME", nargs="+", type=str, help="Download all episodes by these people")
 	group.add_argument("--blog-id", metavar="ID", nargs="+", type=int, help="Download blog post")
 	group.add_argument("--all-blog", action="store_true", help="Download all blog posts")
 	parser_a.add_argument("--unsorted-only", action="store_true", help="Only valid in combination with {}. Downloads only unsorted episodes (episodes which are not categorized into seasons).".format(show_params))
+	parser_a.add_argument("--bohne-num", metavar="n", type=posint, default=1, help="Download episodes with at least n of the people specified by {} present at the same time".format(bohne_params))
+	parser_a.add_argument("--bohne-exclusive", action="store_true", help="If given, don't allow people other than {} to be present".format(bohne_params))
 	parser_a.add_argument("--basepath", metavar="PATH", type=Path, default=DEFAULT_BASEPATH, help="Base output folder")
 	parser_a.add_argument("--outdirtpl", default=DEFAULT_OUTDIRTPL, help="Output folder relative to base folder. Can include the following placeholders: {}".format(", ".join(OUTDIRTPL_KEYS)))
 	parser_a.add_argument("--outtmpl", default=DEFAULT_OUTTMPL, help="Output file path relative to output folder. Can include the same placeholders as '--outdirtpl' as well as youtube-dl placeholders. See youtube-dl output template: https://github.com/ytdl-org/youtube-dl#output-template")
@@ -354,8 +420,14 @@ def main():
 
 	if args.command == "download":
 
+		if args.bohne_num <= 0:
+			parser.error("--bohne-num must be strictly greater than 0")
+
+		if (args.bohne_num != 1 or args.bohne_exclusive) and not (args.bohne_id or args.bohne_name):
+			parser.error("--bohne-num and --bohne-exclusive must be used with {}".format(bohne_params))
+
 		if args.unsorted_only and not (args.show_id or args.show_name or args.all_shows):
-			parser.error("--unsorted-only must be used together with {}".format(show_params))
+			parser.error("--unsorted-only must be used with {}".format(show_params))
 
 		with RBTVDownloader(args.basepath, args.outdirtpl, args.outtmpl, args.format, args.missing_value, args.record_path) as rbtv:
 
@@ -374,11 +446,9 @@ def main():
 			elif args.all_shows:
 				rbtv.download_all_shows(args.unsorted_only)
 			elif args.bohne_id:
-				for bohne_id in args.bohne_id:
-					rbtv.download_bohne(bohne_id)
+				rbtv.download_bohnen(args.bohne_id, args.bohne_num, args.bohne_exclusive, dry=True)
 			elif args.bohne_name:
-				for bohne_name in args.bohne_name:
-					rbtv.download_bohne_by_name(bohne_name)
+				rbtv.download_bohnen_by_name(args.bohne_name, args.bohne_num, args.bohne_exclusive, dry=True)
 			elif args.blog_id:
 				for blog_id in args.blog_id:
 					rbtv.download_blog_post(blog_id)
