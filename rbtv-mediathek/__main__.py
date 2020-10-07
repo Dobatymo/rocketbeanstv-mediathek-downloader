@@ -11,7 +11,8 @@ from youtube_dl.utils import sanitize_filename, DownloadError
 from rbtv import RBTVAPI, name_of_season, batch_iter, parse_datetime
 
 if TYPE_CHECKING:
-	from typing import Optional, Tuple
+	from typing import Optional, Tuple, Iterable, Iterator, Union, Dict, Set, TextIO, Sequence, TypeVar
+	T = TypeVar("T")
 
 __version__ = "0.4"
 
@@ -70,7 +71,7 @@ class RBTVDownloader(object):
 
 	def __init__(self, basepath=DEFAULT_BASEPATH, outdirtpl=DEFAULT_OUTDIRTPL, outtmpl=DEFAULT_OUTTMPL,
 		format=DEFAULT_FORMAT, missing_value=DEFAULT_MISSING_VALUE, record_path=None, retries=DEFAULT_RETRIES):
-		# type: (Path, str, str, str, str, Optional[str], int) -> None
+		# type: (Path, str, str, Optional[str], str, Optional[str], int) -> None
 
 		self.basepath = basepath
 		self.outdirtpl = outdirtpl
@@ -156,13 +157,13 @@ class RBTVDownloader(object):
 
 		dt = parse_datetime(episode["firstBroadcastdate"])
 		if dt:
-			year, month, day, hour, minute, second = (dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second)
+			year, month, day, hour, minute, second = tuple(map(str, (dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second))) # Tuple
 		else:
 			year, month, day, hour, minute, second = (self.missing_value, ) * 6
 
 		if in_season:
 			season = self.api.get_season(episode["showId"], episode["seasonId"])
-			season_id = int(episode["seasonId"])
+			season_id = episode["seasonId"]
 			season_name = sanitize_filename(name_of_season(season))  # type: Optional[str]
 			season_number = opt_int(season["numeric"])  # type: Optional[int]
 		else:
@@ -240,48 +241,75 @@ class RBTVDownloader(object):
 
 		return True
 
+	def _print_episode(self, episode):
+		# type: (dict, ) -> None
+
+		episode_id = int(episode["id"])
+		title = episode["title"]
+		hosts = [self.api.bohne_id_to_name(bohne_id) for bohne_id in episode["hosts"]]
+		print("id={}: {} ({})".format(episode_id, title, ", ".join(hosts)))
+
 	def _download_episodes(self, episodes):
 		# type: (Iterable[dict], ) -> None
 
 		for episode in episodes:
 			self._download_episode(episode)
 
-	def download_episode(self, episode_id):
-		# type: (int, ) -> None
+	def _print_episodes(self, episodes):
+		# type: (Iterable[dict], ) -> None
+
+		for episode in episodes:
+			self._print_episodes(episodes)
+
+	def download_episode(self, episode_id, dry=False):
+		# type: (int, bool) -> None
 
 		episode = one(self.api.get_episode(episode_id)["episodes"])
-		self._download_episode(episode)
-
-	def download_season(self, season_id):
-		# type: (int, ) -> None
-
-		for episode in episode_iter(self.api.get_episodes_by_season(season_id)):
+		
+		if dry:
+			self._print_episode(episode)
+		else:
 			self._download_episode(episode)
 
-	def download_show(self, show_id, unsorted_only=False):
+	def download_season(self, season_id, dry=False):
 		# type: (int, bool) -> None
+
+		for episode in episode_iter(self.api.get_episodes_by_season(season_id)):
+			if dry:
+				self._print_episode(episode)
+			else:
+				self._download_episode(episode)
+
+	def download_show(self, show_id, unsorted_only=False, dry=False):
+		# type: (int, bool, bool) -> None
 
 		if unsorted_only:
 			for episode in episode_iter(self.api.get_unsorted_episodes_by_show(show_id)):
-				self._download_episode(episode)
+				if dry:
+					self._print_episode(episode)
+				else:
+					self._download_episode(episode)
 			# fixme: logging.warning("No unsorted episodes found for show id=%s", show_id)
 
 		else:
 			for episode in episode_iter(self.api.get_episodes_by_show(show_id)):
-				self._download_episode(episode)
+				if dry:
+					self._print_episode(episode)
+				else:
+					self._download_episode(episode)
 
-	def download_show_by_name(self, show_name, unsorted_only=False):
-		# type: (str, bool) -> None
+	def download_show_by_name(self, show_name, unsorted_only=False, dry=False):
+		# type: (str, bool, bool) -> None
 
 		show_id = self.api.show_name_to_id(show_name)
-		self.download_show(show_id, unsorted_only)
+		self.download_show(show_id, unsorted_only, dry)
 
-	def download_all_shows(self, unsorted_only=False):
-		# type: (bool, ) -> None
+	def download_all_shows(self, unsorted_only=False, dry=False):
+		# type: (bool, bool) -> None
 
 		for show in self.api.get_shows_mini():
 			show_id = show["id"]
-			self.download_show(show_id, unsorted_only)
+			self.download_show(show_id, unsorted_only, dry)
 
 	def _iter_episodes_for_bohnen(self, bohne_ids):
 		# type: (Iterable[int], ) -> Iterator[dict]
@@ -316,15 +344,6 @@ class RBTVDownloader(object):
 
 			return [episodes[episode_id] for episode_id in self.filter_sets(bohnen, bohne_ids, num, exclusive)]
 
-	def _print_episodes(self, episodes):
-		# type: (Iterable[dict], ) -> None
-
-		for episode in episodes:
-			episode_id = int(episode["id"])
-			title = episode["title"]
-			hosts = [self.api.bohne_id_to_name(bohne_id) for bohne_id in episode["hosts"]]
-			print(episode_id, title, hosts)
-
 	def download_bohnen(self, bohne_ids, num=1, exclusive=False, dry=False):
 		# type: (Iterable[int], int, bool, bool) -> None
 
@@ -340,8 +359,8 @@ class RBTVDownloader(object):
 		bohne_ids = [self.api.bohne_name_to_id(bohne_name) for bohne_name in bohne_names]
 		self.download_bohnen(bohne_ids, num, exclusive, dry)
 
-	def download_blog_post(self, blog_id):
-		# type: (int, ) -> None
+	def download_blog_post(self, blog_id, dry=False):
+		# type: (int, bool) -> None
 
 		post = self.api.get_blog_post(blog_id)
 		path = self.basepath / SINGLE_BLOG_TPL.format(blog_id=blog_id)
@@ -349,8 +368,8 @@ class RBTVDownloader(object):
 		with open(path, "xt", encoding="utf-8") as fw:
 			json.dump(post, fw, indent="\t", ensure_ascii=False)
 
-	def download_blog_posts(self):
-		# type: () -> None
+	def download_blog_posts(self, dry=False):
+		# type: (bool, ) -> None
 
 		path = self.basepath / ALL_BLOG_TPL
 
@@ -395,6 +414,7 @@ def main():
 	parser_a.add_argument("--missing-value", default=DEFAULT_MISSING_VALUE, help="Value used for --outdirtpl if field is not available.")
 	parser_a.add_argument("--record-path", metavar="PATH", default=None, type=Path, help="File path where successful downloads are recorded. These episodes will be skipped if downloaded again.")
 	parser_a.add_argument("--retries", metavar="N", default=DEFAULT_RETRIES, type=int, help="Retry failed downloads N times.")
+	parser_a.add_argument("--dry", action="store_true", help="Download actually download the files. Just display a list.")
 
 	parser_b = subparsers.add_parser("browse", help="browse mediathek", formatter_class=ArgumentDefaultsHelpFormatter)
 	group = parser_b.add_mutually_exclusive_group(required=True)
@@ -433,27 +453,27 @@ def main():
 
 			if args.episode_id:
 				for episode_id in args.episode_id:
-					rbtv.download_episode(episode_id)
+					rbtv.download_episode(episode_id, args.dry)
 			elif args.season_id:
 				for season_id in args.season_id:
-					rbtv.download_season(season_id)
+					rbtv.download_season(season_id, args.dry)
 			elif args.show_id:
 				for show_id in args.show_id:
-					rbtv.download_show(show_id, args.unsorted_only)
+					rbtv.download_show(show_id, args.unsorted_only, args.dry)
 			elif args.show_name:
 				for show_name in args.show_name:
-					rbtv.download_show_by_name(show_name, args.unsorted_only)
+					rbtv.download_show_by_name(show_name, args.unsorted_only, args.dry)
 			elif args.all_shows:
-				rbtv.download_all_shows(args.unsorted_only)
+				rbtv.download_all_shows(args.unsorted_only, args.dry)
 			elif args.bohne_id:
-				rbtv.download_bohnen(args.bohne_id, args.bohne_num, args.bohne_exclusive, dry=True)
+				rbtv.download_bohnen(args.bohne_id, args.bohne_num, args.bohne_exclusive, args.dry)
 			elif args.bohne_name:
-				rbtv.download_bohnen_by_name(args.bohne_name, args.bohne_num, args.bohne_exclusive, dry=True)
+				rbtv.download_bohnen_by_name(args.bohne_name, args.bohne_num, args.bohne_exclusive, args.dry)
 			elif args.blog_id:
 				for blog_id in args.blog_id:
-					rbtv.download_blog_post(blog_id)
+					rbtv.download_blog_post(blog_id, args.dry)
 			elif args.all_blog:
-				rbtv.download_blog_posts()
+				rbtv.download_blog_posts(args.dry)
 
 	if args.command == "browse":
 
@@ -462,8 +482,8 @@ def main():
 		if args.episode_id:
 			episode = one(api.get_episode(args.episode_id)["episodes"])
 			print("#{} {}\n{}".format(episode["episode"], episode["title"], episode["description"]))
-			for url in islice(youtube_tokens_to_urls(episode["youtubeTokens"]), args.limit):
-				print(url)
+			for token in islice(episode["youtubeTokens"], args.limit):
+				print(youtube_token_to_url(token))
 
 		elif args.season_id:
 			for episode in islice(episode_iter(api.get_episodes_by_season(args.season_id)), args.limit):

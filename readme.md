@@ -84,6 +84,10 @@ Download all episodes with Simon.
 
 Download all episodes with Gregor, sort them by release year and use the episode id and part for the filename.
 
+- `rbtv-mediathek.pyz download --bohne-name "Simon" "Gregor" --bohne-num 2 --bohne-exclusive`
+
+Download all episodes hosted exclusivly by the "Spiele mit Bart" team.
+
 ### `rbtv-mediathek.pyz browse --help`
 ```
 usage: rbtv-mediathek.pyz browse [-h]
