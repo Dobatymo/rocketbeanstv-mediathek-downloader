@@ -219,6 +219,7 @@ class RBTVDownloader(object):
 				r"ERROR: [a-zA-Z0-9\-_]+: YouTube said: Unable to extract video data": lambda: logging.error("Downloading episode id=%s (%s) failed. Unable to extract video data.", episode["id"], url),  # ExtractorError
 				r"ERROR: unable to download video data": lambda: logging.error("Downloading episode id=%s (%s) failed. Unable to download video data.", episode["id"], url),  # ExtractorError
 				r"ERROR: giving up after [0-9]+ retries": lambda: logging.error("Downloading episode id=%s (%s) failed. Max retries exceeded.", episode["id"], url),  # DownloadError
+				r"ERROR: This video is not available in your country.": lambda: logging.error("Downloading episode id=%s (%s) failed. Video geo-blocked.", episode["id"], url),  # ExtractorError
 			}
 
 			with YoutubeDL(ydl_opts) as ydl:
