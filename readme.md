@@ -13,27 +13,29 @@ For 1080p support you also need FFmpeg <https://www.ffmpeg.org/download.html> or
 ### `rbtv-mediathek.pyz download --help`
 ```
 usage: rbtv-mediathek.pyz download [-h]
-                            (--episode-id ID [ID ...] | --season-id ID [ID ...] | --show-id ID [ID ...] | --show-name NAME [NAME ...] | --all-shows | --bohne-id ID [ID ...] | --bohne-name NAME [NAME ...] | --blog-id ID [ID ...] | --all-blog)
-                            [--unsorted-only] [--basepath PATH]
-                            [--outdirtpl OUTDIRTPL] [--outtmpl OUTTMPL]
-                            [--format FORMAT] [--missing-value MISSING_VALUE]
-                            [--record-path PATH] [--retries N]
+                                  (--episode-id ID [ID ...] | --season-id ID [ID ...] | --show-id ID [ID ...] | --show-name NAME [NAME ...] | --all-shows | --bohne-id ID [ID ...] | --bohne-name NAME [NAME ...] | --blog-id ID [ID ...] | --all-blog)
+                                  [--unsorted-only] [--bohne-num n]
+                                  [--bohne-exclusive] [--basepath PATH]
+                                  [--outdirtpl OUTDIRTPL] [--outtmpl OUTTMPL]
+                                  [--format FORMAT]
+                                  [--missing-value MISSING_VALUE]
+                                  [--record-path PATH] [--retries N] [--dry]
 
 optional arguments:
   -h, --help            show this help message and exit
   --episode-id ID [ID ...]
-                        Download this episode (default: None)
+                        Download these episodes (default: None)
   --season-id ID [ID ...]
-                        Download all episodes of this season (default: None)
+                        Download all episodes of these seasons (default: None)
   --show-id ID [ID ...]
-                        Download all episodes of this show (default: None)
+                        Download all episodes of these shows (default: None)
   --show-name NAME [NAME ...]
-                        Download all episodes of this show (default: None)
+                        Download all episodes of these shows (default: None)
   --all-shows           Download all episodes of all shows (default: False)
   --bohne-id ID [ID ...]
-                        Download all episodes by Bohne (default: None)
+                        Download all episodes by these people (default: None)
   --bohne-name NAME [NAME ...]
-                        Download all episodes by Bohne (default: None)
+                        Download all episodes by these people (default: None)
   --blog-id ID [ID ...]
                         Download blog post (default: None)
   --all-blog            Download all blog posts (default: False)
@@ -41,6 +43,11 @@ optional arguments:
                         or --all-shows. Downloads only unsorted episodes
                         (episodes which are not categorized into seasons).
                         (default: False)
+  --bohne-num n         Download episodes with at least n of the people
+                        specified by --bohne-id or --bohne-name present at the
+                        same time (default: 1)
+  --bohne-exclusive     If given, don't allow people other than --bohne-id or
+                        --bohne-name to be present (default: False)
   --basepath PATH       Base output folder (default: .)
   --outdirtpl OUTDIRTPL
                         Output folder relative to base folder. Can include the
@@ -64,6 +71,8 @@ optional arguments:
                         These episodes will be skipped if downloaded again.
                         (default: None)
   --retries N           Retry failed downloads N times. (default: 10)
+  --dry                 Download actually download the files. Just display a
+                        list. (default: False)
 ```
 
 #### Examples
@@ -91,8 +100,8 @@ Download all episodes hosted exclusivly by the "Spiele mit Bart" team.
 ### `rbtv-mediathek.pyz browse --help`
 ```
 usage: rbtv-mediathek.pyz browse [-h]
-                          (--episode-id ID | --season-id ID | --show-id ID | --show-name NAME | --all-shows | --bohne-id ID | --bohne-name NAME | --all-bohnen | --blog-id ID | --all-blog | --search SEARCH)
-                          [--limit N]
+                                (--episode-id ID | --season-id ID | --show-id ID | --show-name NAME | --all-shows | --bohne-id ID | --bohne-name NAME | --all-bohnen | --blog-id ID | --all-blog | --search SEARCH)
+                                [--limit N]
 
 optional arguments:
   -h, --help         show this help message and exit

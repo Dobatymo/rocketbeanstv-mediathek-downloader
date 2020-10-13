@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 	from typing import Optional, Tuple, Iterable, Iterator, Union, Dict, Set, TextIO, Sequence, TypeVar
 	T = TypeVar("T")
 
-__version__ = "0.4"
+__version__ = "0.5"
 
 DEFAULT_BASEPATH = Path(".")
 DEFAULT_OUTDIRTPL = "{show_name}/{season_name}"
