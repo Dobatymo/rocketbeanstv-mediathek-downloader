@@ -218,6 +218,7 @@ class RBTVDownloader(object):
 				r"ERROR: Did not get any data blocks": lambda: logging.error("Downloading episode id=%s (%s) failed. Did not get any data blocks.", episode["id"], url),
 				r"ERROR: [a-zA-Z0-9\-_]+: YouTube said: Unable to extract video data": lambda: logging.error("Downloading episode id=%s (%s) failed. Unable to extract video data.", episode["id"], url),  # ExtractorError
 				r"ERROR: unable to download video data": lambda: logging.error("Downloading episode id=%s (%s) failed. Unable to download video data.", episode["id"], url),  # ExtractorError
+				r"ERROR: giving up after [0-9]+ retries": lambda: logging.error("Downloading episode id=%s (%s) failed. Max retries exceeded.", episode["id"], url),  # DownloadError
 			}
 
 			with YoutubeDL(ydl_opts) as ydl:
@@ -259,7 +260,7 @@ class RBTVDownloader(object):
 		# type: (Iterable[dict], ) -> None
 
 		for episode in episodes:
-			self._print_episodes(episodes)
+			self._print_episode(episode)
 
 	def download_episode(self, episode_id, dry=False):
 		# type: (int, bool) -> None
