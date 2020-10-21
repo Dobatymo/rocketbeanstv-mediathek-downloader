@@ -4,7 +4,7 @@
 
 Install Python 3.5 (or newer) from <https://www.python.org/downloads/>.
 If you downloaded the `rbtv-mediathek.pyz` file from the release section, just call it from the command line.
-Otherwise install the dependencies with `py -m pip install -r requirements.txt` and run `rbtv-mediathek/__main__.py`.
+Otherwise install the dependencies with `py -m pip install -r requirements.txt` and run `rbtv-mediathek.py`.
 
 For 1080p support you also need FFmpeg <https://www.ffmpeg.org/download.html> or avconv <https://libav.org/download/> in %PATH%.
 
