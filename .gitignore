@@ -1,7 +1,9 @@
+rbtv-mediathek/*/
+
 __pycache__/
 *.py[cod]
 *.egg-info
 build/
 dist/
 
-rbtv-mediathek/*/
+.mypy_cache/

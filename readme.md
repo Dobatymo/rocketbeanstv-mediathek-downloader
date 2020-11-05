@@ -97,6 +97,10 @@ Download all episodes with Gregor, sort them by release year and use the episode
 
 Download all episodes hosted exclusivly by the "Spiele mit Bart" team.
 
+- `rbtv-mediathek.pyz filter --bohne-id 15 33 --bohne-num 2 --bohne-exclusive --sort-by firstBroadcastdate
+
+Show all episodes hosted exclusivly by the "Spiele mit Bart" team from local database sorted by release date.
+
 ### `rbtv-mediathek.pyz browse --help`
 ```
 usage: rbtv-mediathek.pyz browse [-h]
