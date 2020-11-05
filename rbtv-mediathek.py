@@ -1,20 +1,23 @@
-import logging, re, json
-from datetime import datetime
-from pathlib import Path
-from itertools import islice
-from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter, ArgumentTypeError
+import json
+import logging
+import re
+import time
+from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser, ArgumentTypeError
 from collections import defaultdict
+from datetime import datetime
+from itertools import islice
+from pathlib import Path
 from typing import TYPE_CHECKING
 
-from youtube_dl import YoutubeDL, DEFAULT_OUTTMPL
-from youtube_dl.utils import sanitize_filename, DownloadError
-from rbtv import RBTVAPI, name_of_season, batch_iter, parse_datetime
+from rbtv import RBTVAPI, batch_iter, name_of_season, parse_datetime
+from youtube_dl import DEFAULT_OUTTMPL, YoutubeDL
+from youtube_dl.utils import DownloadError, sanitize_filename
 
 if TYPE_CHECKING:
-	from typing import Optional, Tuple, Iterable, Iterator, Union, Dict, Set, TextIO, Sequence, TypeVar
+	from typing import Dict, Iterable, Iterator, Optional, Sequence, Set, TextIO, Tuple, TypeVar, Union
 	T = TypeVar("T")
 
-__version__ = "0.5"
+__version__ = "0.5.1"
 
 DEFAULT_BASEPATH = Path(".")
 DEFAULT_OUTDIRTPL = "{show_name}/{season_name}"
@@ -212,6 +215,11 @@ class RBTVDownloader(object):
 				"writesubtitles": self.writesubtitles,
 			}
 
+			def error_too_many_requests():
+				TOO_MANY_REQUESTS_DELAY = 60
+				logging.error("Downloading episode id=%s (%s) failed. HTTP Error 429: Too Many Requests. Waiting for %s seconds.", episode["id"], url, TOO_MANY_REQUESTS_DELAY)
+				time.sleep(TOO_MANY_REQUESTS_DELAY)
+
 			errors = {
 				r"ERROR: Unsupported URL": lambda: logging.error("Downloading episode id=%s (%s) is not supported", episode["id"], url),  # UnsupportedError
 				r"ERROR: Incomplete YouTube ID": lambda: logging.error("YouTube ID of episode id=%s (%s) looks incomplete", episode["id"], youtube_token),  # ExtractorError
@@ -220,6 +228,7 @@ class RBTVDownloader(object):
 				r"ERROR: unable to download video data": lambda: logging.error("Downloading episode id=%s (%s) failed. Unable to download video data.", episode["id"], url),  # ExtractorError
 				r"ERROR: giving up after [0-9]+ retries": lambda: logging.error("Downloading episode id=%s (%s) failed. Max retries exceeded.", episode["id"], url),  # DownloadError
 				r"ERROR: This video is not available in your country.": lambda: logging.error("Downloading episode id=%s (%s) failed. Video geo-blocked.", episode["id"], url),  # ExtractorError
+				r"ERROR: Unable to download webpage: HTTP Error 429: Too Many Requests .*": error_too_many_requests,  # DownloadError
 			}
 
 			with YoutubeDL(ydl_opts) as ydl:
