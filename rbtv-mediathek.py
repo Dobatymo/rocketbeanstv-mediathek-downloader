@@ -1,3 +1,5 @@
+from __future__ import generator_stop
+
 import json
 import logging
 import re
@@ -14,10 +16,14 @@ from youtube_dl import DEFAULT_OUTTMPL, YoutubeDL
 from youtube_dl.utils import DownloadError, sanitize_filename
 
 if TYPE_CHECKING:
-	from typing import Any, Dict, Iterable, Iterator, Optional, Sequence, Set, TextIO, Tuple, TypeVar, Union
+	from argparse import Namespace
+	from typing import (Any, Callable, Dict, Iterable, Iterator, List, Optional, Sequence, Set, TextIO, Tuple, TypeVar,
+	                    Union)
+
+	JsonDict = Dict[str, Any]
 	T = TypeVar("T")
 
-__version__ = "0.5.1"
+__version__ = "0.6"
 
 DEFAULT_BASEPATH = Path(".")
 DEFAULT_OUTDIRTPL = "{show_name}/{season_name}"
@@ -68,7 +74,14 @@ def posint(s):
 	return number
 
 def episode_iter(eps_combined):
+	# type: (JsonDict, ) -> Iterator[JsonDict]
+
 	return batch_iter(eps_combined, "episodes")
+
+def is_in_season(episode):
+	# type: (JsonDict, ) -> bool
+
+	return bool(episode.get("seasonId"))
 
 class RBTVDownloader(object):
 
@@ -145,9 +158,9 @@ class RBTVDownloader(object):
 			return episode_id in self.downloaded_episodes
 
 	def _download_episode(self, episode):
-		# type: (dict, ) -> bool
+		# type: (JsonDict, ) -> bool
 
-		in_season = bool(episode.get("seasonId"))
+		in_season = is_in_season(episode)
 		episode_id = int(episode["id"])
 
 		if self._check_record(episode_id):
@@ -217,6 +230,8 @@ class RBTVDownloader(object):
 			}
 
 			def error_too_many_requests():
+				# type: () -> None
+
 				TOO_MANY_REQUESTS_DELAY = 60
 				logging.error("Downloading episode id=%s (%s) failed. HTTP Error 429: Too Many Requests. Waiting for %s seconds.", episode["id"], url, TOO_MANY_REQUESTS_DELAY)
 				time.sleep(TOO_MANY_REQUESTS_DELAY)
@@ -316,18 +331,26 @@ class RBTVDownloader(object):
 				fw.write("\n")
 
 def print_episode_short(episode):
+	# type: (JsonDict, ) -> None
+
 	print("id={} {} (show={} season={} ep={}) ({})".format(episode["id"], episode["title"], episode["showName"], episode.get("seasonId", ""), episode.get("episode", ""), parse_datetime(episode["firstBroadcastdate"])))
 
 def print_episode(episode, limit=None):
+	# type: (JsonDict, Optional[int]) -> None
+
 	print_episode_short(episode)
 	print(episode["description"])
 	for token in islice(episode["youtubeTokens"], limit):
 		print(youtube_token_to_url(token))
 
 def print_show_short(show):
+	# type: (JsonDict, ) -> None
+
 	print("id={} {} (genre={} seasons={} '{}')".format(show["id"], show["title"], show["genre"], len(show["seasons"]), show["statusPublicNote"] or ""))
 
 def print_show_long(show, limit=None):
+	# type: (JsonDict, Optional[int]) -> None
+
 	print_show_short(show)
 
 	if show["hasUnsortedEpisodes"]:
@@ -339,62 +362,119 @@ def print_show_long(show, limit=None):
 		print("This show doesn't not have any seasons")
 
 def print_bohne_short(bohne):
+	# type: (JsonDict, ) -> None
+
 	print("id={} {} (episodes={})".format(bohne["mgmtid"], bohne["name"], bohne["episodeCount"]))
 
 def print_post_long(post):
+	# type: (JsonDict, ) -> None
+
 	print_post_short(post)
 	print(post["subtitle"])
 
 def print_post_short(post):
+	# type: (JsonDict, ) -> None
+
 	authors = ", ".join(a["name"] for a in post.get("authors", []))
 	print("id={} {} by '{}' ({})".format(post["id"], post["title"], authors, parse_datetime(post["publishDate"])))
 
 def sort_by_item(it, key, limit=None):
+	# type: (Iterable[JsonDict], Optional[str], Optional[int]) -> Iterator[JsonDict]
+
 	if key:
 		return islice(sorted(it, key=itemgetter(key)), limit)
 	else:
 		return islice(it, limit)
 
+def find_in_columns(text, columns):
+	# type: (str, Iterable[str]) -> Callable[[JsonDict], bool]
+
+	def filter(doc):
+		# type: (JsonDict, ) -> bool
+
+		for c in columns:
+			if text.lower() in doc[c].lower():
+				return True
+
+		return False
+
+	return filter
+
 class Backend(object):
 
+	def __enter__(self):
+		# type: () -> Backend
+		return self
+
+	def __exit__(self, *args):
+		pass
+
 	def get_episodes(self, episode_ids):
-		# type: (Iterable[int], ) -> Iterator[dict]
+		# type: (Iterable[int], ) -> Iterator[JsonDict]
 		raise NotImplementedError
 
 	def get_season(self, show_id, season_id):
-		# type: (int, int) -> dict
+		# type: (int, int) -> JsonDict
 		raise NotImplementedError
 
 	def get_episodes_by_season(self, season_ids, sort_by=None, limit=None):
-		# type: (Iterable[int], Optional[str], Optional[int]) -> Iterator[dict]
+		# type: (Iterable[int], Optional[str], Optional[int]) -> Iterator[JsonDict]
 		raise NotImplementedError
 
 	def get_episodes_by_show(self, show_ids, unsorted_only=False, sort_by=None, limit=None):
-		# type: (Iterable[int], bool, Optional[str], Optional[int]) -> Iterator[dict]
+		# type: (Iterable[int], bool, Optional[str], Optional[int]) -> Iterator[JsonDict]
 		raise NotImplementedError
 
 	def get_episodes_by_show_name(self, show_names, unsorted_only=False, sort_by=None, limit=None):
-		# type: (Iterable[str], bool, Optional[str], Optional[int]) -> Iterator[dict]
+		# type: (Iterable[str], bool, Optional[str], Optional[int]) -> Iterator[JsonDict]
 		raise NotImplementedError
 
 	def get_all_episodes(self, unsorted_only=False, sort_by=None, limit=None):
-		# type: (bool, Optional[str], Optional[int]) -> Iterator[dict]
+		# type: (bool, Optional[str], Optional[int]) -> Iterator[JsonDict]
 		raise NotImplementedError
 
 	def get_episodes_by_bohne(self, bohne_ids, num, exclusive, sort_by=None, limit=None):
-		# type: (Iterable[int], int, bool, Optional[str], Optional[int]) -> Iterable[dict]
+		# type: (Iterable[int], int, bool, Optional[str], Optional[int]) -> Iterable[JsonDict]
 		raise NotImplementedError
 
 	def get_episodes_by_bohne_name(self, bohne_names, num, exclusive, sort_by=None, limit=None):
-		# type: (Iterable[str], int, bool, Optional[str], Optional[int]) -> Iterable[dict]
+		# type: (Iterable[str], int, bool, Optional[str], Optional[int]) -> Iterable[JsonDict]
+		raise NotImplementedError
+
+	def get_shows(self, show_ids):
+		# type: (Iterable[int], ) -> Iterator[JsonDict]
+		raise NotImplementedError
+
+	def get_all_shows(self, sort_by=None, limit=None):
+		# type: (Optional[str], Optional[int]) -> Iterator[JsonDict]
+		raise NotImplementedError
+
+	def get_shows_by_name(self, show_names):
+		# type: (Iterable[str], ) -> Iterator[JsonDict]
 		raise NotImplementedError
 
 	def get_posts(self, blog_ids):
-		# type: (Iterable[int], ) -> Iterator[dict]
+		# type: (Iterable[int], ) -> Iterator[JsonDict]
 		raise NotImplementedError
 
 	def get_all_posts(self, sort_by=None, limit=None):
-		# type: (Optional[str], Optional[int]) -> Iterator[dict]
+		# type: (Optional[str], Optional[int]) -> Iterator[JsonDict]
+		raise NotImplementedError
+
+	def get_all_bohnen(self, sort_by=None, limit=None):
+		# type: (Optional[str], Optional[int]) -> Iterator[JsonDict]
+		raise NotImplementedError
+
+	def get_bohnen_by_name(self, bohne_names):
+		# type: (Iterable[str], ) -> Iterator[JsonDict]
+		raise NotImplementedError
+
+	def get_bohnen(self, bohne_ids):
+		# type: (Iterable[int], ) -> Iterator[JsonDict]
+		raise NotImplementedError
+
+	def search(self, text):
+		# type: (str, ) -> Tuple[List[JsonDict], List[JsonDict], List[JsonDict]]
 		raise NotImplementedError
 
 class LiveBackend(Backend):
@@ -402,25 +482,19 @@ class LiveBackend(Backend):
 	def __init__(self):
 		self.api = RBTVAPI()
 
-	def __enter__(self):
-		return self
-
-	def __exit__(self, *args):
-		pass
-
 	def get_episodes(self, episode_ids):
-		# type: (Iterable[int], ) -> Iterator[dict]
+		# type: (Iterable[int], ) -> Iterator[JsonDict]
 
 		for episode_id in episode_ids:
 			yield one(self.api.get_episode(episode_id)["episodes"])
 
 	def get_season(self, show_id, season_id):
-		# type: (int, int) -> dict
+		# type: (int, int) -> JsonDict
 
 		return self.api.get_season(show_id, season_id)
 
 	def get_episodes_by_season(self, season_ids, sort_by=None, limit=None):
-		# type: (Iterable[int], Optional[str], Optional[int]) -> Iterator[dict]
+		# type: (Iterable[int], Optional[str], Optional[int]) -> Iterator[JsonDict]
 
 		def episodes():
 			for season_id in season_ids:
@@ -430,19 +504,19 @@ class LiveBackend(Backend):
 		return sort_by_item(episodes(), sort_by, limit)
 
 	def get_shows(self, show_ids):
-		# type: (Iterable[int], ) -> Iterator[dict]
+		# type: (Iterable[int], ) -> Iterator[JsonDict]
 
 		for show_id in show_ids:
 			yield self.api.get_show(show_id)
 
 	def get_shows_by_name(self, show_names):
-		# type: (Iterable[str], ) -> Iterator[dict]
+		# type: (Iterable[str], ) -> Iterator[JsonDict]
 
 		show_ids = [self.api.show_name_to_id(show_name) for show_name in show_names]
 		return self.get_shows(show_ids)
 
 	def get_episodes_by_show(self, show_ids, unsorted_only=False, sort_by=None, limit=None):
-		# type: (Iterable[int], bool, Optional[str], Optional[int]) -> Iterator[dict]
+		# type: (Iterable[int], bool, Optional[str], Optional[int]) -> Iterator[JsonDict]
 
 		if unsorted_only:
 			iterfunc = self.api.get_unsorted_episodes_by_show
@@ -457,46 +531,46 @@ class LiveBackend(Backend):
 		return sort_by_item(episodes(), sort_by, limit)
 
 	def get_episodes_by_show_name(self, show_names, unsorted_only=False, sort_by=None, limit=None):
-		# type: (Iterable[str], bool, Optional[str], Optional[int]) -> Iterator[dict]
+		# type: (Iterable[str], bool, Optional[str], Optional[int]) -> Iterator[JsonDict]
 
 		show_ids = [self.api.show_name_to_id(show_name) for show_name in show_names]
 		return self.get_episodes_by_show(show_ids, unsorted_only, sort_by, limit)
 
 	def get_all_episodes(self, unsorted_only=False, sort_by=None, limit=None):
-		# type: (bool, Optional[str], Optional[int]) -> Iterator[dict]
+		# type: (bool, Optional[str], Optional[int]) -> Iterator[JsonDict]
 
 		show_ids = [show["id"] for show in self.api.get_shows_mini()]
 		return self.get_episodes_by_show(show_ids, unsorted_only, sort_by, limit)
 
 	def get_all_shows(self, sort_by=None, limit=None):
-		# type: (Optional[str], Optional[int]) -> Iterator[dict]
+		# type: (Optional[str], Optional[int]) -> Iterator[JsonDict]
 
 		return sort_by_item(self.api.get_shows(), sort_by, limit)
 
 	def get_all_bohnen(self, sort_by=None, limit=None):
-		# type: (Optional[str], Optional[int]) -> Iterator[dict]
+		# type: (Optional[str], Optional[int]) -> Iterator[JsonDict]
 
 		return sort_by_item(self.api.get_bohnen_portraits(), sort_by, limit)
 
 	def get_posts(self, blog_ids):
-		# type: (Iterable[int], ) -> Iterator[dict]
+		# type: (Iterable[int], ) -> Iterator[JsonDict]
 
 		for blog_id in blog_ids:
 			yield self.api.get_blog_post_preview(blog_id)
 
 	def get_all_posts(self, sort_by=None, limit=None):
-		# type: (Optional[str], Optional[int]) -> Iterator[dict]
+		# type: (Optional[str], Optional[int]) -> Iterator[JsonDict]
 
 		return sort_by_item(self.api.get_blog_posts_preview(), sort_by, limit)
 
 	def get_bohnen(self, bohne_ids):
-		# type: (Iterable[int], ) -> Iterator[dict]
+		# type: (Iterable[int], ) -> Iterator[JsonDict]
 
 		for bohne_id in bohne_ids:
 			yield self.api.get_bohne_portrait(bohne_id)
 
 	def get_bohnen_by_name(self, bohne_names):
-		# type: (Iterable[str], ) -> Iterator[dict]
+		# type: (Iterable[str], ) -> Iterator[JsonDict]
 
 		bohne_ids = [self.api.bohne_name_to_id(bohne_name) for bohne_name in bohne_names]
 		return self.get_bohnen(bohne_ids)
@@ -511,7 +585,7 @@ class LiveBackend(Backend):
 					yield episode_id
 
 	def get_episodes_by_bohne(self, bohne_ids, num, exclusive, sort_by=None, limit=None):
-		# type: (Iterable[int], int, bool, Optional[str], Optional[int]) -> Iterable[dict]
+		# type: (Iterable[int], int, bool, Optional[str], Optional[int]) -> Iterable[JsonDict]
 
 		if num == 1 and not exclusive:  # low memory fast path for common options
 
@@ -522,7 +596,7 @@ class LiveBackend(Backend):
 
 		else:
 			def episodes():
-				episodes = {}  # type: Dict[int, dict]
+				episodes = {}  # type: Dict[int, JsonDict]
 
 				for bohne_id in bohne_ids:
 					for episode in episode_iter(self.api.get_episodes_by_bohne(bohne_id)):
@@ -535,12 +609,14 @@ class LiveBackend(Backend):
 		return sort_by_item(episodes(), sort_by, limit)
 
 	def get_episodes_by_bohne_name(self, bohne_names, num, exclusive, sort_by=None, limit=None):
-		# type: (Iterable[str], int, bool, Optional[str], Optional[int]) -> Iterable[dict]
+		# type: (Iterable[str], int, bool, Optional[str], Optional[int]) -> Iterable[JsonDict]
 
 		bohne_ids = [self.api.bohne_name_to_id(bohne_name) for bohne_name in bohne_names]
 		return self.get_episodes_by_bohne(bohne_ids, num, exclusive, sort_by, limit)
 
 	def search(self, text):
+		# type: (str, ) -> Tuple[List[JsonDict], List[JsonDict], List[JsonDict]]
+
 		result = self.api.search(text)
 		shows = result["shows"]
 		episodes = result["episodes"]
@@ -608,6 +684,8 @@ class LocalBackend(Backend):
 			blog.store(all_blog)
 
 	def close(self):
+		# type: () -> None
+
 		self.db.close()
 
 	def __enter__(self):
@@ -617,14 +695,14 @@ class LocalBackend(Backend):
 		self.close()
 
 	def get_episodes(self, episode_ids):
-		# type: (Iterable[int], ) -> Iterator[dict]
+		# type: (Iterable[int], ) -> Iterator[JsonDict]
 
 		episode_ids = set(episode_ids)
 		episodes = self.db.collection("episodes")
 		return episodes.filter(lambda doc: doc["id"] in episode_ids)
 
 	def get_season(self, show_id, season_id):
-		# type: (int, int) -> dict
+		# type: (int, int) -> JsonDict
 
 		shows = self.db.collection("shows")
 		show = one(shows.filter(lambda doc: doc["id"] == show_id))
@@ -636,93 +714,93 @@ class LocalBackend(Backend):
 		raise KeyError("Season id not found: show={} season={}".format(show_id, season_id))
 
 	def get_episodes_by_season(self, seasons_ids, sort_by=None, limit=None):
-		# type: (Iterable[int], Optional[str], Optional[int]) -> Iterator[dict]
+		# type: (Iterable[int], Optional[str], Optional[int]) -> Iterator[JsonDict]
 
 		season_ids = set(seasons_ids)
 		episodes = self.db.collection("episodes")
 		return sort_by_item(episodes.filter(lambda doc: doc["seasonId"] in season_ids), sort_by, limit)
 
 	def get_shows(self, show_ids):
-		# type: (Iterable[int], ) -> Iterator[dict]
+		# type: (Iterable[int], ) -> Iterator[JsonDict]
 
 		show_ids = set(show_ids)
 		shows = self.db.collection("shows")
 		return shows.filter(lambda doc: doc["id"] in show_ids)
 
 	def get_shows_by_name(self, show_names):
-		# type: (Iterable[str], ) -> Iterator[dict]
+		# type: (Iterable[str], ) -> Iterator[JsonDict]
 
 		shows = self.db.collection("shows")
 		show_ids = [show_name_to_id(shows.all(), show_name) for show_name in show_names]
 		return self.get_shows(show_ids)
 
 	def get_episodes_by_show(self, show_ids, unsorted_only=False, sort_by=None, limit=None):
-		# type: (Iterable[int], bool, Optional[str], Optional[int]) -> Iterator[dict]
+		# type: (Iterable[int], bool, Optional[str], Optional[int]) -> Iterator[JsonDict]
 
 		show_ids = set(show_ids)
 		episodes = self.db.collection("episodes")
 		if unsorted_only:
-			raise RuntimeError("Not implemented yet")
+			return sort_by_item(episodes.filter(lambda doc: doc["showId"] in show_ids and not is_in_season(doc)), sort_by, limit)
 		else:
 			return sort_by_item(episodes.filter(lambda doc: doc["showId"] in show_ids), sort_by, limit)
 
 	def get_episodes_by_show_name(self, show_names, unsorted_only=False, sort_by=None, limit=None):
-		# type: (Iterable[str], bool, Optional[str], Optional[int]) -> Iterator[dict]
+		# type: (Iterable[str], bool, Optional[str], Optional[int]) -> Iterator[JsonDict]
 
 		shows = self.db.collection("shows")
 		show_ids = [show_name_to_id(shows.all(), show_name) for show_name in show_names]
 		return self.get_episodes_by_show(show_ids, unsorted_only, sort_by, limit)
 
 	def get_all_episodes(self, unsorted_only=False, sort_by=None, limit=None):
-		# type: (bool, Optional[str], Optional[int]) -> Iterator[dict]
+		# type: (bool, Optional[str], Optional[int]) -> Iterator[JsonDict]
 
 		episodes = self.db.collection("episodes")
 		if unsorted_only:
-			raise RuntimeError("Not implemented yet")
+			return sort_by_item(episodes.filter(lambda doc: not is_in_season(doc)), sort_by, limit)
 		else:
 			return sort_by_item(episodes.all(), sort_by, limit)
 
 	def get_all_shows(self, sort_by=None, limit=None):
-		# type: (Optional[str], Optional[int]) -> Iterator[dict]
+		# type: (Optional[str], Optional[int]) -> Iterator[JsonDict]
 
 		shows = self.db.collection("shows")
 		return sort_by_item(shows.all(), sort_by, limit)
 
 	def get_all_bohnen(self, sort_by=None, limit=None):
-		# type: (Optional[str], Optional[int]) -> Iterator[dict]
+		# type: (Optional[str], Optional[int]) -> Iterator[JsonDict]
 
 		bohnen = self.db.collection("bohnen")
 		return sort_by_item(bohnen.all(), sort_by, limit)
 
 	def get_posts(self, blog_ids):
-		# type: (Iterable[int], ) -> Iterator[dict]
+		# type: (Iterable[int], ) -> Iterator[JsonDict]
 
 		blog_ids = set(blog_ids)
 		blog = self.db.collection("blog")
 		return blog.filter(lambda doc: doc["id"] in blog_ids)
 
 	def get_all_posts(self, sort_by=None, limit=None):
-		# type: (Optional[str], Optional[int]) -> Iterator[dict]
+		# type: (Optional[str], Optional[int]) -> Iterator[JsonDict]
 
 		blog = self.db.collection("blog")
 		return sort_by_item(blog.all(), sort_by, limit)
 
 	def get_bohnen(self, bohne_ids):
-		# type: (Iterable[int], ) -> Iterator[dict]
+		# type: (Iterable[int], ) -> Iterator[JsonDict]
 
 		bohne_ids = set(bohne_ids)
 		bohnen = self.db.collection("bohnen")
 		return bohnen.filter(lambda doc: doc["mgmtid"] in bohne_ids)
 
 	def get_bohnen_by_name(self, bohne_names):
-		# type: (Iterable[str], ) -> Iterator[dict]
+		# type: (Iterable[str], ) -> Iterator[JsonDict]
 
 		bohnen = self.db.collection("bohnen")
 		bohne_ids = [bohne_name_to_id(bohnen.all(), bohne_name) for bohne_name in bohne_names]
 		return self.get_bohnen(bohne_ids)
 
 	def get_episodes_by_bohne(self, bohne_ids, num, exclusive, sort_by=None, limit=None):
-		# type: (Iterable[int], int, bool, Optional[str], Optional[int]) -> Iterator[dict]
+		# type: (Iterable[int], int, bool, Optional[str], Optional[int]) -> Iterator[JsonDict]
 
 		bohne_ids = set(bohne_ids)
 		episodes = self.db.collection("episodes")
@@ -737,17 +815,27 @@ class LocalBackend(Backend):
 		return sort_by_item(episodes.filter(filter_sets), sort_by, limit)
 
 	def get_episodes_by_bohne_name(self, bohne_names, num, exclusive, sort_by=None, limit=None):
-		# type: (Iterable[str], int, bool, Optional[str], Optional[int]) -> Iterator[dict]
+		# type: (Iterable[str], int, bool, Optional[str], Optional[int]) -> Iterator[JsonDict]
 
 		bohnen = self.db.collection("bohnen")
 		bohne_ids = [bohne_name_to_id(bohnen.all(), bohne_name) for bohne_name in bohne_names]
 		return self.get_episodes_by_bohne(bohne_ids, num, exclusive, sort_by, limit)
 
 	def search(self, text):
-		raise RuntimeError("Not implemented yet")
+		# type: (str, ) -> Tuple[List[JsonDict], List[JsonDict], List[JsonDict]]
+
+		shows = self.db.collection("shows")
+		episodes = self.db.collection("episodes")
+		blog = self.db.collection("blog")
+
+		shows = shows.filter(find_in_columns(text, ("title", "description")))
+		episodes = episodes.filter(find_in_columns(text, ("title", "description")))
+		posts = blog.filter(find_in_columns(text, ("title", "subtitle", "contentMK", "contentHTML")))
+
+		return shows, episodes, posts
 
 def get_backend(args):
-	# type: (Any, ) -> Backend
+	# type: (Namespace, ) -> Backend
 
 	if args.backend == "live":
 		return LiveBackend()
@@ -757,6 +845,7 @@ def get_backend(args):
 		raise ValueError(args.backend)
 
 def download(args):
+	# type: (Namespace, ) -> None
 
 	with get_backend(args) as backend:
 		with RBTVDownloader(backend, args.basepath, args.outdirtpl, args.outtmpl, args.format, args.missing_value, args.record_path) as rbtv:
@@ -781,6 +870,7 @@ def download(args):
 				rbtv.download_all_blog_posts()
 
 def browse(args):
+	# type: (Namespace, ) -> None
 
 	with get_backend(args) as backend:
 		if args.episode_id:
@@ -856,6 +946,8 @@ def main():
 	)
 	parser.add_argument("-v", "--verbose", action="store_true")
 	parser.add_argument("--version", action="version", version=__version__)
+	parser.add_argument("--db-path", default=DEFAULT_DB_PATH, help="Path to the database file for local backend")
+	parser.add_argument("--backend", default=DEFAULT_BACKEND, choices=("local", "live"), help="Query data from online live api or from locally cached backend")
 	subparsers = parser.add_subparsers(dest="command")
 	subparsers.required = True
 
@@ -882,8 +974,6 @@ def main():
 	parser_a.add_argument("--retries", metavar="N", default=DEFAULT_RETRIES, type=int, help="Retry failed downloads N times.")
 
 	parser_b = subparsers.add_parser("browse", help="browse mediathek", formatter_class=ArgumentDefaultsHelpFormatter)
-	parser_b.add_argument("--db-path", default=DEFAULT_DB_PATH, help="Path to the database file for local backend")
-	parser_b.add_argument("--backend", default=DEFAULT_BACKEND, choices=("local", "live"), help="Query data from online live api or from locally cached backend")
 	group = parser_b.add_mutually_exclusive_group(required=True)
 	group.add_argument("--episode-id", metavar="ID", nargs="+", type=int, help="Show episode info")
 	group.add_argument("--season-id", metavar="ID", nargs="+", type=int, help="Show season info")
@@ -902,7 +992,7 @@ def main():
 	parser_b.add_argument("--bohne-exclusive", action="store_true", help="If given, don't allow people other than {} to be present".format(bohne_params))
 
 	parser_c = subparsers.add_parser("dump", help="dump mediathek meta data for fast search", formatter_class=ArgumentDefaultsHelpFormatter)
-	parser_c.add_argument("--db-path", default=DEFAULT_DB_PATH, help="Path to the database file to cache information locally")
+	parser_c.add_argument("--noprogress", action="store_false", help="Don't show progress when dumping database")
 
 	args = parser.parse_args()
 
@@ -925,10 +1015,16 @@ def main():
 		download(args)
 
 	elif args.command == "browse":
+		if args.bohne_num <= 0:
+			parser.error("--bohne-num must be strictly greater than 0")
+
+		if (args.bohne_num != 1 or args.bohne_exclusive) and not (args.bohne_id or args.bohne_name):
+			parser.error("--bohne-num and --bohne-exclusive must be used with {}".format(bohne_params))
+
 		browse(args)
 
 	elif args.command == "dump":
-		LocalBackend.create(args.db_path, verbose=True)
+		LocalBackend.create(args.db_path, verbose=not args.noprogress)
 
 if __name__ == "__main__":
 	main()

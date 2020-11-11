@@ -1,6 +1,6 @@
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v3.2.0
+    rev: v3.3.0
     hooks:
       - id: check-json
       - id: check-yaml
@@ -13,3 +13,10 @@ repos:
     rev: 3.8.4
     hooks:
       - id: flake8
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: 'v0.790'
+    hooks:
+    -   id: mypy
+        additional_dependencies:
+          - rbtv-api>=0.0.6
+          - youtube-dl>=2020.11.29
