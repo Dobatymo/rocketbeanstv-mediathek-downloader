@@ -19,7 +19,7 @@ usage: rbtv-mediathek.pyz download [-h]
                                   [--outdirtpl OUTDIRTPL] [--outtmpl OUTTMPL]
                                   [--format FORMAT]
                                   [--missing-value MISSING_VALUE]
-                                  [--record-path PATH] [--retries N] [--dry]
+                                  [--record-path PATH] [--retries N]
 
 optional arguments:
   -h, --help            show this help message and exit
@@ -71,8 +71,6 @@ optional arguments:
                         These episodes will be skipped if downloaded again.
                         (default: None)
   --retries N           Retry failed downloads N times. (default: 10)
-  --dry                 Download actually download the files. Just display a
-                        list. (default: False)
 ```
 
 #### Examples
@@ -103,24 +101,46 @@ Show all episodes hosted exclusivly by the "Spiele mit Bart" team from local dat
 
 ### `rbtv-mediathek.pyz browse --help`
 ```
-usage: rbtv-mediathek.pyz browse [-h]
-                                (--episode-id ID | --season-id ID | --show-id ID | --show-name NAME | --all-shows | --bohne-id ID | --bohne-name NAME | --all-bohnen | --blog-id ID | --all-blog | --search SEARCH)
+usage: rbtv-mediathek.pyz browse [-h] [--db-path DB_PATH]
+                                [--backend {local,live}]
+                                (--episode-id ID [ID ...] | --season-id ID [ID ...] | --show-id ID [ID ...] | --show-name NAME [NAME ...] | --all-shows | --bohne-id ID [ID ...] | --bohne-name NAME [NAME ...] | --all-bohnen | --blog-id ID [ID ...] | --all-blog | --search SEARCH)
                                 [--limit N]
+                                [--sort-by {id,title,showName,firstBroadcastdate}]
+                                [--bohne-num n] [--bohne-exclusive]
 
 optional arguments:
-  -h, --help         show this help message and exit
-  --episode-id ID    Show episode info (default: None)
-  --season-id ID     Show season info (default: None)
-  --show-id ID       Show show info (default: None)
-  --show-name NAME   Show show info (default: None)
-  --all-shows        Show a list of all shows (default: False)
-  --bohne-id ID      Show bohne info (default: None)
-  --bohne-name NAME  Show bohne info (default: None)
-  --all-bohnen       Show a list of all Bohnen (default: False)
-  --blog-id ID       Show blog post info (default: None)
-  --all-blog         Show all blog posts (default: False)
-  --search SEARCH    Search shows and episodes (default: None)
-  --limit N          Limit list output to N items (default: None)
+  -h, --help            show this help message and exit
+  --db-path DB_PATH     Path to the database file for local backend (default:
+                        rbtv.udb)
+  --backend {local,live}
+                        Query data from online live api or from locally cached
+                        backend (default: local)
+  --episode-id ID [ID ...]
+                        Show episode info (default: None)
+  --season-id ID [ID ...]
+                        Show season info (default: None)
+  --show-id ID [ID ...]
+                        Show show info (default: None)
+  --show-name NAME [NAME ...]
+                        Show show info (default: None)
+  --all-shows           Show a list of all shows (default: False)
+  --bohne-id ID [ID ...]
+                        Show bohne info (default: None)
+  --bohne-name NAME [NAME ...]
+                        Show bohne info (default: None)
+  --all-bohnen          Show a list of all Bohnen (default: False)
+  --blog-id ID [ID ...]
+                        Show blog post info (default: None)
+  --all-blog            Show all blog posts (default: False)
+  --search SEARCH       Search shows and episodes (default: None)
+  --limit N             Limit list output to N items (default: None)
+  --sort-by {id,title,showName,firstBroadcastdate}
+                        Sort output (default: None)
+  --bohne-num n         Show episodes with at least n of the people specified
+                        by --bohne-id or --bohne-name present at the same time
+                        (default: 1)
+  --bohne-exclusive     If given, don't allow people other than --bohne-id or
+                        --bohne-name to be present (default: False)
 ```
 
 #### Examples

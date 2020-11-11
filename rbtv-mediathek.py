@@ -14,7 +14,7 @@ from youtube_dl import DEFAULT_OUTTMPL, YoutubeDL
 from youtube_dl.utils import DownloadError, sanitize_filename
 
 if TYPE_CHECKING:
-	from typing import Any, Callable, Dict, Iterable, Iterator, Optional, Sequence, Set, TextIO, Tuple, TypeVar, Union
+	from typing import Any, Dict, Iterable, Iterator, Optional, Sequence, Set, TextIO, Tuple, TypeVar, Union
 	T = TypeVar("T")
 
 __version__ = "0.5.1"
@@ -557,13 +557,16 @@ class LocalBackend(Backend):
 
 	@classmethod
 	def create(cls, path, verbose=False):
-		from genutility.iter import progress
+		from genutility.iter import progress as _progress
 		from unqlite import UnQLite
 
 		api = RBTVAPI()
 
-		if not verbose:
-			progress = lambda x: x  # type: Callable[..., Any]
+		if verbose:
+			progress = _progress
+		else:
+			def progress(it, *args, **kwargs):
+				return it
 
 		with UnQLite(path) as db:
 
