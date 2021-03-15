@@ -244,7 +244,9 @@ class RBTVDownloader(object):
 				r"ERROR: unable to download video data": lambda: logging.error("Downloading episode id=%s (%s) failed. Unable to download video data.", episode["id"], url),  # ExtractorError
 				r"ERROR: giving up after [0-9]+ retries": lambda: logging.error("Downloading episode id=%s (%s) failed. Max retries exceeded.", episode["id"], url),  # DownloadError
 				r"ERROR: This video is not available in your country.": lambda: logging.error("Downloading episode id=%s (%s) failed. Video geo-blocked.", episode["id"], url),  # ExtractorError
-				r"ERROR: Unable to download webpage: HTTP Error 429: Too Many Requests .*": error_too_many_requests,  # DownloadError
+				r"ERROR: Unable to download webpage: HTTP Error 429: Too Many Requests (.*)": error_too_many_requests,  # DownloadError
+				r"ERROR: Video unavailable\nThis video contains content from (?P<owner>.*), who has blocked it on copyright grounds\.": lambda owner: logging.error("Downloading episode id=%s (%s) failed. Video blocked by %s on copyright grounds.", episode["id"], url, owner),  # DownloadError
+				r"ERROR: Video unavailable\nThis video contains content from (?P<owner>.*), who has blocked it in your country on copyright grounds\.": lambda owner: logging.error("Downloading episode id=%s (%s) failed. Video blocked by %s in this country on copyright grounds.", episode["id"], url, owner),  # DownloadError
 			}
 
 			with YoutubeDL(ydl_opts) as ydl:
@@ -255,10 +257,12 @@ class RBTVDownloader(object):
 					errmsg = e.args[0]
 
 					for pat, logfunc in errors.items():
-						if re.match(pat, errmsg):
-							logfunc()
+						m = re.match(pat, errmsg)
+						if m:
+							logfunc(**m.groupdict())
 							break
 					else:
+						logging.error("errormsg: %r", errmsg)
 						raise
 				else:
 					self._record_id(episode_id, episode_part)
