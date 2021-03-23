@@ -2,7 +2,7 @@
 
 ## Installation
 
-Install Python 3.5 (or newer) from <https://www.python.org/downloads/>.
+Install Python 3.6 (or newer) from <https://www.python.org/downloads/>.
 - If you downloaded the `rbtv-mediathek.pyz` file from the release section, just call it from the command line.
 Note: If you want to use `--backend local` (currently the default) you still need to `py -m pip install unqlite` because C modules are not supported within zipapps.
 - Otherwise install the dependencies with `py -m pip install -r requirements.txt` and run `rbtv-mediathek.py`.
@@ -102,20 +102,15 @@ Show all episodes hosted exclusivly by the "Spiele mit Bart" team from local dat
 
 ### `rbtv-mediathek.pyz browse --help`
 ```
-usage: rbtv-mediathek.pyz browse [-h] [--db-path DB_PATH]
-                                [--backend {local,live}]
+usage: rbtv-mediathek.pyz browse [-h]
                                 (--episode-id ID [ID ...] | --season-id ID [ID ...] | --show-id ID [ID ...] | --show-name NAME [NAME ...] | --all-shows | --bohne-id ID [ID ...] | --bohne-name NAME [NAME ...] | --all-bohnen | --blog-id ID [ID ...] | --all-blog | --search SEARCH)
                                 [--limit N]
                                 [--sort-by {id,title,showName,firstBroadcastdate}]
-                                [--bohne-num n] [--bohne-exclusive]
+                                [--unsorted-only] [--bohne-num n]
+                                [--bohne-exclusive] [--episodes]
 
 optional arguments:
   -h, --help            show this help message and exit
-  --db-path DB_PATH     Path to the database file for local backend (default:
-                        rbtv.udb)
-  --backend {local,live}
-                        Query data from online live api or from locally cached
-                        backend (default: local)
   --episode-id ID [ID ...]
                         Show episode info (default: None)
   --season-id ID [ID ...]
@@ -137,11 +132,17 @@ optional arguments:
   --limit N             Limit list output to N items (default: None)
   --sort-by {id,title,showName,firstBroadcastdate}
                         Sort output (default: None)
+  --unsorted-only       Only valid in combination with --show-id, --show-name
+                        or --all-shows. Only shows unsorted episodes (episodes
+                        which are not categorized into seasons). (default:
+                        False)
   --bohne-num n         Show episodes with at least n of the people specified
                         by --bohne-id or --bohne-name present at the same time
                         (default: 1)
   --bohne-exclusive     If given, don't allow people other than --bohne-id or
                         --bohne-name to be present (default: False)
+  --episodes            Also display episodes when applicable (shows, Bohnen,
+                        ...) (default: False)
 ```
 
 #### Examples
@@ -153,6 +154,19 @@ Find shows, episodes and blog posts related to resident evil.
 - `rbtv-mediathek.pyz browse --show-name "After Dark"`
 
 Print information about the show After Dark, including some information about all seasons.
+
+- `rbtv-mediathek.pyz browse --show-name "After Dark"` --episodes
+
+Print information about the show After Dark, including some information about all seasons and list all episodes which belong to this show.
+
+### `rbtv-mediathek.pyz dump --help`
+```
+usage: rbtv-mediathek.pyz dump [-h] [--no-progress]
+
+optional arguments:
+  -h, --help     show this help message and exit
+  --no-progress  Don't show progress when dumping database (default: True)
+```
 
 ## Missing features (which I intend to implement in the future)
 

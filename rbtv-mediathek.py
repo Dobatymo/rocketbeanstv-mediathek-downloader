@@ -1,12 +1,15 @@
 from __future__ import generator_stop
 
+import errno
 import json
 import logging
 import re
 import time
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser, ArgumentTypeError
+from functools import lru_cache
 from itertools import islice
 from operator import itemgetter
+from os import fspath, strerror
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -20,6 +23,8 @@ if TYPE_CHECKING:
 	from typing import (Any, Callable, Dict, Iterable, Iterator, List, Optional, Sequence, Set, TextIO, Tuple, TypeVar,
 	                    Union)
 
+	import unqlite
+
 	JsonDict = Dict[str, Any]
 	T = TypeVar("T")
 
@@ -29,7 +34,7 @@ DEFAULT_BASEPATH = Path(".")
 DEFAULT_OUTDIRTPL = "{show_name}/{season_name}"
 DEFAULT_MISSING_VALUE = "-"
 DEFAULT_RETRIES = 10
-DEFAULT_DB_PATH = "rbtv.udb"
+DEFAULT_DB_PATH = Path("rbtv.udb")
 DEFAULT_BACKEND = "local"
 
 # similar to "bestvideo+bestaudio/best", but with improved fallback to "best"
@@ -42,10 +47,13 @@ OUTDIRTPL_KEYS = ("show_id", "show_name", "season_id", "season_name",
 SINGLE_BLOG_TPL = "blog-{blog_id}.json"
 ALL_BLOG_TPL = "blog-posts.jl"
 
+class InvalidCollection(ValueError):
+	pass
+
 def youtube_token_to_url(token):
 	# type: (str, ) -> str
 
-	return "https://www.youtube.com/watch?v={}".format(token)
+	return f"https://www.youtube.com/watch?v={token}"
 
 def one(seq):
 	# type: (Sequence[T], ) -> T
@@ -53,6 +61,16 @@ def one(seq):
 	if len(seq) != 1:
 		raise ValueError("Input must be of length 1")
 	return seq[0]
+
+def unqlite_all(col):
+	# type: (unqlite.Collection, ) -> Iterator[JsonDict]
+
+	ret = col.all()
+
+	if ret is None:
+		raise InvalidCollection("Collection doesn't exist")
+
+	return ret
 
 def opt_int(s):
 	# type: (Optional[str], ) -> Optional[int]
@@ -68,7 +86,7 @@ def posint(s):
 	number = int(s)
 
 	if number <= 0:
-		msg = "{0} is not strictly greater than 0".format(s)
+		msg = f"{s} is not strictly greater than 0"
 		raise ArgumentTypeError(msg)
 
 	return number
@@ -178,22 +196,14 @@ class RBTVDownloader(object):
 		else:
 			year, month, day, hour, minute, second = (self.missing_value, ) * 6
 
-		if in_season:
-			season = self.backend.get_season(episode["showId"], episode["seasonId"])
-			season_id = episode["seasonId"]
-			season_name = sanitize_filename(name_of_season(season))  # type: Optional[str]
-			season_number = opt_int(season["numeric"])  # type: Optional[int]
-		else:
-			season_id = self.missing_value
-			season_name = None
-			season_number = None
+		season = self.backend.get_season_info(episode)
 
 		tpl_map = {
 			"show_id": int(episode["showId"]),
 			"show_name": sanitize_filename(episode["showName"]) or self.missing_value,
-			"season_id": season_id,
-			"season_name": season_name or self.missing_value,
-			"season_number": season_number or self.missing_value,
+			"season_id": season.get("id") or self.missing_value,
+			"season_name": season.get("name") or self.missing_value,
+			"season_number": season.get("number") or self.missing_value,
 			"episode_id": episode_id,
 			"episode_name": sanitize_filename(episode["title"]) or self.missing_value,
 			"episode_number": opt_int(episode["episode"]) or self.missing_value,
@@ -247,7 +257,7 @@ class RBTVDownloader(object):
 				r"ERROR: Unable to download webpage: HTTP Error 429: Too Many Requests (.*)": error_too_many_requests,  # DownloadError
 				r"ERROR: Video unavailable\nThis video contains content from (?P<owner>.*), who has blocked it on copyright grounds\.": lambda owner: logging.error("Downloading episode id=%s (%s) failed. Video blocked by %s on copyright grounds.", episode["id"], url, owner),  # DownloadError
 				r"ERROR: Video unavailable\nThis video contains content from (?P<owner>.*), who has blocked it in your country on copyright grounds\.": lambda owner: logging.error("Downloading episode id=%s (%s) failed. Video blocked by %s in this country on copyright grounds.", episode["id"], url, owner),  # DownloadError
-			}
+			}  # type: Dict[str, Callable[..., None]]
 
 			with YoutubeDL(ydl_opts) as ydl:
 				try:
@@ -334,15 +344,20 @@ class RBTVDownloader(object):
 				json.dump(post, fw, indent=None, ensure_ascii=False)
 				fw.write("\n")
 
-def print_episode_short(episode):
-	# type: (JsonDict, ) -> None
+def print_episode_short(episode, season=None):
+	# type: (JsonDict, Optional[JsonDict]) -> None
 
-	print("id={} {} (show={} season={} ep={}) ({})".format(episode["id"], episode["title"], episode["showName"], episode.get("seasonId", ""), episode.get("episode", ""), parse_datetime(episode["firstBroadcastdate"])))
+	if season is None:
+		season_info = episode.get("seasonId", "")
+	else:
+		season_info = season.get("name", "") or season.get("number", "") or season.get("id", "")
 
-def print_episode(episode, limit=None):
-	# type: (JsonDict, Optional[int]) -> None
+	print("id={} {} (show={} season={} ep={}) ({})".format(episode["id"], episode["title"], episode["showName"], season_info, episode.get("episode", ""), parse_datetime(episode["firstBroadcastdate"])))
 
-	print_episode_short(episode)
+def print_episode(episode, season=None, limit=None):
+	# type: (JsonDict, Optional[JsonDict], Optional[int]) -> None
+
+	print_episode_short(episode, season)
 	print(episode["description"])
 	for token in islice(episode["youtubeTokens"], limit):
 		print(youtube_token_to_url(token))
@@ -412,6 +427,32 @@ class Backend(object):
 
 	def __exit__(self, *args):
 		pass
+
+	def get_season_info(self, episode):
+		# type: (JsonDict, ) -> JsonDict
+
+		in_season = is_in_season(episode)
+
+		if in_season:
+			try:
+				season = self.get_season(episode["showId"], episode["seasonId"])
+			except KeyError:
+				logging.warning("Season not found for show=%s season=%s episode=%s", episode["showId"], episode["seasonId"], episode["id"])
+				season_id = episode["seasonId"]  # type: Optional[str]
+				season_name = None  # type: Optional[str]
+				season_number = None  # type: Optional[int]
+			else:
+				season_id = episode["seasonId"]
+				season_name = sanitize_filename(name_of_season(season))
+				season_number = opt_int(season["numeric"])
+		else:
+			season_id = None
+			season_name = None
+			season_number = None
+
+		return {k: v for k, v in {
+			"id": season_id, "name": season_name, "number": season_number,
+		}.items() if v is not None}
 
 	def get_episodes(self, episode_ids):
 		# type: (Iterable[int], ) -> Iterator[JsonDict]
@@ -484,6 +525,8 @@ class Backend(object):
 class LiveBackend(Backend):
 
 	def __init__(self):
+		# type: () -> None
+
 		self.api = RBTVAPI()
 
 	def get_episodes(self, episode_ids):
@@ -629,14 +672,22 @@ class LiveBackend(Backend):
 
 class LocalBackend(Backend):
 
+	UNQLITE_OPEN_READONLY = 0x00000001  # how to import from unqlite?
+
 	def __init__(self, path):
+		# type: (Path, ) -> None
+
 		from unqlite import UnQLite
 
-		UNQLITE_OPEN_READONLY = 0x00000001  # how to import from unqlite?
-		self.db = UnQLite(path, flags=UNQLITE_OPEN_READONLY)
+		if not path.is_file():
+			raise FileNotFoundError(errno.ENOENT, strerror(errno.ENOENT), fspath(path))
+
+		self.db = UnQLite(fspath(path), flags=self.UNQLITE_OPEN_READONLY)
 
 	@classmethod
 	def create(cls, path, verbose=False):
+		# type: (Path, bool) -> None
+
 		from genutility.iter import progress as _progress
 		from unqlite import UnQLite
 
@@ -648,7 +699,7 @@ class LocalBackend(Backend):
 			def progress(it, *args, **kwargs):
 				return it
 
-		with UnQLite(path) as db:
+		with UnQLite(fspath(path)) as db:
 
 			shows = db.collection("shows")
 			shows.drop()
@@ -667,7 +718,7 @@ class LocalBackend(Backend):
 			shows.store(all_shows)
 
 			episodes.create()
-			for show in progress(shows.all(), extra_info_callback=lambda i, l: "processing shows"):
+			for show in progress(unqlite_all(shows), extra_info_callback=lambda i, l: "processing shows"):
 				show_id = show["id"]
 				try:
 					all_episodes = list(episode_iter(api.get_episodes_by_show(show_id)))
@@ -693,6 +744,8 @@ class LocalBackend(Backend):
 		self.db.close()
 
 	def __enter__(self):
+		# type: () -> LocalBackend
+
 		return self
 
 	def __exit__(self, *args):
@@ -705,6 +758,7 @@ class LocalBackend(Backend):
 		episodes = self.db.collection("episodes")
 		return episodes.filter(lambda doc: doc["id"] in episode_ids)
 
+	@lru_cache(maxsize=128)
 	def get_season(self, show_id, season_id):
 		# type: (int, int) -> JsonDict
 
@@ -715,7 +769,7 @@ class LocalBackend(Backend):
 			if season["id"] == season_id:
 				return season
 
-		raise KeyError("Season id not found: show={} season={}".format(show_id, season_id))
+		raise KeyError(f"Season id not found: show={show_id} season={season_id}")
 
 	def get_episodes_by_season(self, seasons_ids, sort_by=None, limit=None):
 		# type: (Iterable[int], Optional[str], Optional[int]) -> Iterator[JsonDict]
@@ -735,7 +789,7 @@ class LocalBackend(Backend):
 		# type: (Iterable[str], ) -> Iterator[JsonDict]
 
 		shows = self.db.collection("shows")
-		show_ids = [show_name_to_id(shows.all(), show_name) for show_name in show_names]
+		show_ids = [show_name_to_id(unqlite_all(shows), show_name) for show_name in show_names]
 		return self.get_shows(show_ids)
 
 	def get_episodes_by_show(self, show_ids, unsorted_only=False, sort_by=None, limit=None):
@@ -752,7 +806,7 @@ class LocalBackend(Backend):
 		# type: (Iterable[str], bool, Optional[str], Optional[int]) -> Iterator[JsonDict]
 
 		shows = self.db.collection("shows")
-		show_ids = [show_name_to_id(shows.all(), show_name) for show_name in show_names]
+		show_ids = [show_name_to_id(unqlite_all(shows), show_name) for show_name in show_names]
 		return self.get_episodes_by_show(show_ids, unsorted_only, sort_by, limit)
 
 	def get_all_episodes(self, unsorted_only=False, sort_by=None, limit=None):
@@ -762,19 +816,19 @@ class LocalBackend(Backend):
 		if unsorted_only:
 			return sort_by_item(episodes.filter(lambda doc: not is_in_season(doc)), sort_by, limit)
 		else:
-			return sort_by_item(episodes.all(), sort_by, limit)
+			return sort_by_item(unqlite_all(episodes), sort_by, limit)
 
 	def get_all_shows(self, sort_by=None, limit=None):
 		# type: (Optional[str], Optional[int]) -> Iterator[JsonDict]
 
 		shows = self.db.collection("shows")
-		return sort_by_item(shows.all(), sort_by, limit)
+		return sort_by_item(unqlite_all(shows), sort_by, limit)
 
 	def get_all_bohnen(self, sort_by=None, limit=None):
 		# type: (Optional[str], Optional[int]) -> Iterator[JsonDict]
 
 		bohnen = self.db.collection("bohnen")
-		return sort_by_item(bohnen.all(), sort_by, limit)
+		return sort_by_item(unqlite_all(bohnen), sort_by, limit)
 
 	def get_posts(self, blog_ids):
 		# type: (Iterable[int], ) -> Iterator[JsonDict]
@@ -787,7 +841,7 @@ class LocalBackend(Backend):
 		# type: (Optional[str], Optional[int]) -> Iterator[JsonDict]
 
 		blog = self.db.collection("blog")
-		return sort_by_item(blog.all(), sort_by, limit)
+		return sort_by_item(unqlite_all(blog), sort_by, limit)
 
 	def get_bohnen(self, bohne_ids):
 		# type: (Iterable[int], ) -> Iterator[JsonDict]
@@ -800,7 +854,7 @@ class LocalBackend(Backend):
 		# type: (Iterable[str], ) -> Iterator[JsonDict]
 
 		bohnen = self.db.collection("bohnen")
-		bohne_ids = [bohne_name_to_id(bohnen.all(), bohne_name) for bohne_name in bohne_names]
+		bohne_ids = [bohne_name_to_id(unqlite_all(bohnen), bohne_name) for bohne_name in bohne_names]
 		return self.get_bohnen(bohne_ids)
 
 	def get_episodes_by_bohne(self, bohne_ids, num, exclusive, sort_by=None, limit=None):
@@ -822,7 +876,7 @@ class LocalBackend(Backend):
 		# type: (Iterable[str], int, bool, Optional[str], Optional[int]) -> Iterator[JsonDict]
 
 		bohnen = self.db.collection("bohnen")
-		bohne_ids = [bohne_name_to_id(bohnen.all(), bohne_name) for bohne_name in bohne_names]
+		bohne_ids = [bohne_name_to_id(unqlite_all(bohnen), bohne_name) for bohne_name in bohne_names]
 		return self.get_episodes_by_bohne(bohne_ids, num, exclusive, sort_by, limit)
 
 	def search(self, text):
@@ -879,27 +933,53 @@ def browse(args):
 	with get_backend(args) as backend:
 		if args.episode_id:
 			for episode in backend.get_episodes(args.episode_id):
-				print_episode(episode, args.limit)
+				season = backend.get_season_info(episode)
+				print_episode(episode, season, args.limit)
 
 		elif args.season_id:
 			for episode in backend.get_episodes_by_season(args.season_id, args.sort_by, args.limit):
-				print_episode_short(episode)
+				season = backend.get_season_info(episode)
+				print_episode_short(episode, season)
 
 		elif args.show_id:
+			show_ids = []  # type: List[int]
 			for show in backend.get_shows(args.show_id):
 				print_show_long(show, args.limit)
+				show_ids.append(show["id"])
+
+			if args.episodes:
+				for episode in backend.get_episodes_by_show(show_ids, args.unsorted_only, args.sort_by, args.limit):
+					season = backend.get_season_info(episode)
+					print_episode_short(episode, season)
 
 		elif args.show_name:
+			show_ids = []
 			for show in backend.get_shows_by_name(args.show_name):
 				print_show_long(show, args.limit)
+				show_ids.append(show["id"])
+
+			if args.episodes:
+				for episode in backend.get_episodes_by_show(show_ids, args.unsorted_only, args.sort_by, args.limit):
+					season = backend.get_season_info(episode)
+					print_episode_short(episode, season)
 
 		elif args.all_shows:
 			for show in backend.get_all_shows(args.sort_by, args.limit):
 				print_show_short(show)
 
+			if args.episodes:
+				for episode in backend.get_all_episodes(args.unsorted_only, args.sort_by, args.limit):
+					season = backend.get_season_info(episode)
+					print_episode_short(episode, season)
+
 		elif args.all_bohnen:
 			for bohne in backend.get_all_bohnen(args.sort_by, args.limit):
 				print_bohne_short(bohne)
+
+			if args.episodes:
+				for episode in backend.get_all_episodes(args.unsorted_only, args.sort_by, args.limit):
+					season = backend.get_season_info(episode)
+					print_episode_short(episode, season)
 
 		elif args.blog_id:
 			for post in backend.get_posts(args.blog_id):
@@ -914,27 +994,31 @@ def browse(args):
 			for bohne in backend.get_bohnen(args.bohne_id):
 				print_bohne_short(bohne)
 
-			for episode in backend.get_episodes_by_bohne(args.bohne_id, args.bohne_num, args.bohne_exclusive, args.sort_by, args.limit):
-				print_episode_short(episode)
+			if args.episodes:
+				for episode in backend.get_episodes_by_bohne(args.bohne_id, args.bohne_num, args.bohne_exclusive, args.sort_by, args.limit):
+					season = backend.get_season_info(episode)
+					print_episode_short(episode, season)
 
 		elif args.bohne_name:
 
 			for bohne in backend.get_bohnen_by_name(args.bohne_name):
 				print_bohne_short(bohne)
 
-			for episode in backend.get_episodes_by_bohne_name(args.bohne_name, args.bohne_num, args.bohne_exclusive, args.sort_by, args.limit):
-				print_episode_short(episode)
+			if args.episodes:
+				for episode in backend.get_episodes_by_bohne_name(args.bohne_name, args.bohne_num, args.bohne_exclusive, args.sort_by, args.limit):
+					season = backend.get_season_info(episode)
+					print_episode_short(episode, season)
 
 		elif args.search:
 			shows, episodes, posts = backend.search(args.search)
-			print("Shows ({})".format(len(shows)))
+			print(f"Shows ({len(shows)})")
 			for show in islice(shows, args.limit):
 				print_show_short(show)
-			print("Episodes ({})".format(len(episodes)))
+			print(f"Episodes ({len(episodes)})")
 			for episode in islice(episodes, args.limit):
 				print_episode_short(episode)
 
-			print("Blog posts ({})".format(len(posts)))
+			print(f"Blog posts ({len(posts)})")
 			for post in islice(posts, args.limit):
 				print_post_short(post)
 
@@ -950,7 +1034,7 @@ def main():
 	)
 	parser.add_argument("-v", "--verbose", action="store_true")
 	parser.add_argument("--version", action="version", version=__version__)
-	parser.add_argument("--db-path", default=DEFAULT_DB_PATH, help="Path to the database file for local backend")
+	parser.add_argument("--db-path", default=DEFAULT_DB_PATH, type=Path, help="Path to the database file for local backend")
 	parser.add_argument("--backend", default=DEFAULT_BACKEND, choices=("local", "live"), help="Query data from online live api or from locally cached backend")
 	subparsers = parser.add_subparsers(dest="command")
 	subparsers.required = True
@@ -966,11 +1050,11 @@ def main():
 	group.add_argument("--bohne-name", metavar="NAME", nargs="+", type=str, help="Download all episodes by these people")
 	group.add_argument("--blog-id", metavar="ID", nargs="+", type=int, help="Download blog post")
 	group.add_argument("--all-blog", action="store_true", help="Download all blog posts")
-	parser_a.add_argument("--unsorted-only", action="store_true", help="Only valid in combination with {}. Downloads only unsorted episodes (episodes which are not categorized into seasons).".format(show_params))
-	parser_a.add_argument("--bohne-num", metavar="n", type=posint, default=1, help="Download episodes with at least n of the people specified by {} present at the same time".format(bohne_params))
-	parser_a.add_argument("--bohne-exclusive", action="store_true", help="If given, don't allow people other than {} to be present".format(bohne_params))
+	parser_a.add_argument("--unsorted-only", action="store_true", help=f"Only valid in combination with {show_params}. Downloads only unsorted episodes (episodes which are not categorized into seasons).")
+	parser_a.add_argument("--bohne-num", metavar="n", type=posint, default=1, help=f"Download episodes with at least n of the people specified by {bohne_params} present at the same time")
+	parser_a.add_argument("--bohne-exclusive", action="store_true", help=f"If given, don't allow people other than {bohne_params} to be present")
 	parser_a.add_argument("--basepath", metavar="PATH", type=Path, default=DEFAULT_BASEPATH, help="Base output folder")
-	parser_a.add_argument("--outdirtpl", default=DEFAULT_OUTDIRTPL, help="Output folder relative to base folder. Can include the following placeholders: {}".format(", ".join(OUTDIRTPL_KEYS)))
+	parser_a.add_argument("--outdirtpl", default=DEFAULT_OUTDIRTPL, help=f"Output folder relative to base folder. Can include the following placeholders: {', '.join(OUTDIRTPL_KEYS)}")
 	parser_a.add_argument("--outtmpl", default=DEFAULT_OUTTMPL, help="Output file path relative to output folder. Can include the same placeholders as '--outdirtpl' as well as youtube-dl placeholders. See youtube-dl output template: https://github.com/ytdl-org/youtube-dl#output-template")
 	parser_a.add_argument("--format", default=DEFAULT_FORMAT, help="Video/audio format. Defaults to 'bestvideo+bestaudio' with fallback to 'best'. See youtube-dl format selection: https://github.com/ytdl-org/youtube-dl#format-selection")
 	parser_a.add_argument("--missing-value", default=DEFAULT_MISSING_VALUE, help="Value used for --outdirtpl if field is not available.")
@@ -992,11 +1076,13 @@ def main():
 	group.add_argument("--search", type=str, help="Search shows and episodes")
 	parser_b.add_argument("--limit", metavar="N", type=int, default=None, help="Limit list output to N items")
 	parser_b.add_argument("--sort-by", type=str, choices=("id", "title", "showName", "firstBroadcastdate"), help="Sort output")
-	parser_b.add_argument("--bohne-num", metavar="n", type=posint, default=1, help="Show episodes with at least n of the people specified by {} present at the same time".format(bohne_params))
-	parser_b.add_argument("--bohne-exclusive", action="store_true", help="If given, don't allow people other than {} to be present".format(bohne_params))
+	parser_b.add_argument("--unsorted-only", action="store_true", help=f"Only valid in combination with {show_params}. Only shows unsorted episodes (episodes which are not categorized into seasons).")
+	parser_b.add_argument("--bohne-num", metavar="n", type=posint, default=1, help=f"Show episodes with at least n of the people specified by {bohne_params} present at the same time")
+	parser_b.add_argument("--bohne-exclusive", action="store_true", help=f"If given, don't allow people other than {bohne_params} to be present")
+	parser_b.add_argument("--episodes", action="store_true", help="Also display episodes when applicable (shows, Bohnen, ...)")
 
 	parser_c = subparsers.add_parser("dump", help="dump mediathek meta data for fast search", formatter_class=ArgumentDefaultsHelpFormatter)
-	parser_c.add_argument("--noprogress", action="store_false", help="Don't show progress when dumping database")
+	parser_c.add_argument("--no-progress", dest="progress", action="store_false", help="Don't show progress when dumping database")
 
 	args = parser.parse_args()
 
@@ -1011,24 +1097,33 @@ def main():
 			parser.error("--bohne-num must be strictly greater than 0")
 
 		if (args.bohne_num != 1 or args.bohne_exclusive) and not (args.bohne_id or args.bohne_name):
-			parser.error("--bohne-num and --bohne-exclusive must be used with {}".format(bohne_params))
+			parser.error(f"--bohne-num and --bohne-exclusive must be used with {bohne_params}")
 
 		if args.unsorted_only and not (args.show_id or args.show_name or args.all_shows):
-			parser.error("--unsorted-only must be used with {}".format(show_params))
+			parser.error(f"--unsorted-only must be used with {show_params}")
 
-		download(args)
+		try:
+			download(args)
+		except FileNotFoundError as e:
+			parser.error(f"{e}. Run `dump` first.")
 
 	elif args.command == "browse":
 		if args.bohne_num <= 0:
 			parser.error("--bohne-num must be strictly greater than 0")
 
 		if (args.bohne_num != 1 or args.bohne_exclusive) and not (args.bohne_id or args.bohne_name):
-			parser.error("--bohne-num and --bohne-exclusive must be used with {}".format(bohne_params))
+			parser.error(f"--bohne-num and --bohne-exclusive must be used with {bohne_params}")
 
-		browse(args)
+		if args.unsorted_only and not (args.show_id or args.show_name or args.all_shows):
+			parser.error(f"--unsorted-only must be used with {show_params}")
+
+		try:
+			browse(args)
+		except FileNotFoundError as e:
+			parser.error(f"{e}. Run `dump` first.")
 
 	elif args.command == "dump":
-		LocalBackend.create(args.db_path, verbose=not args.noprogress)
+		LocalBackend.create(args.db_path, verbose=args.progress)
 
 if __name__ == "__main__":
 	main()
