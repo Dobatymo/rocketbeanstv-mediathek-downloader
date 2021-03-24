@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import time
+import warnings
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser, ArgumentTypeError
 from functools import lru_cache
 from itertools import islice
@@ -13,8 +14,8 @@ from os import fspath, strerror
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from rbtv import RBTVAPI, batch_iter, bohne_name_to_id, name_of_season, parse_datetime, show_name_to_id
-from requests.exceptions import HTTPError
+from genutility.iter import progress
+from rbtv import RBTVAPI, HTTPError, batch_iter, bohne_name_to_id, name_of_season, parse_datetime, show_name_to_id
 from youtube_dl import DEFAULT_OUTTMPL, YoutubeDL
 from youtube_dl.utils import DownloadError, sanitize_filename
 
@@ -28,14 +29,24 @@ if TYPE_CHECKING:
 	JsonDict = Dict[str, Any]
 	T = TypeVar("T")
 
-__version__ = "0.6"
+try:
+	from unqlite import UnQLite
+except ImportError:
+	DEFAULT_BACKEND = "live"
+	ALL_BACKENDS = ["live"]
+	warnings.warn("Local backend not available. Install unqlite.")
+else:
+	DEFAULT_BACKEND = "local"
+	ALL_BACKENDS = ["local", "live"]
+
+__version__ = "0.7"
 
 DEFAULT_BASEPATH = Path(".")
 DEFAULT_OUTDIRTPL = "{show_name}/{season_name}"
 DEFAULT_MISSING_VALUE = "-"
 DEFAULT_RETRIES = 10
 DEFAULT_DB_PATH = Path("rbtv.udb")
-DEFAULT_BACKEND = "local"
+TOO_MANY_REQUESTS_DELAY = 60
 
 # similar to "bestvideo+bestaudio/best", but with improved fallback to "best"
 # if separate streams are not possible
@@ -239,11 +250,10 @@ class RBTVDownloader(object):
 				"writesubtitles": self.writesubtitles,
 			}
 
-			def error_too_many_requests():
-				# type: () -> None
+			def error_too_many_requests(msg):
+				# type: (str, ) -> None
 
-				TOO_MANY_REQUESTS_DELAY = 60
-				logging.error("Downloading episode id=%s (%s) failed. HTTP Error 429: Too Many Requests. Waiting for %s seconds.", episode["id"], url, TOO_MANY_REQUESTS_DELAY)
+				logging.error("Downloading episode id=%s (%s) failed. HTTP Error 429: Too Many Requests: %s. Waiting for %s seconds.", episode["id"], url, msg, TOO_MANY_REQUESTS_DELAY)
 				time.sleep(TOO_MANY_REQUESTS_DELAY)
 
 			errors = {
@@ -252,9 +262,9 @@ class RBTVDownloader(object):
 				r"ERROR: Did not get any data blocks": lambda: logging.error("Downloading episode id=%s (%s) failed. Did not get any data blocks.", episode["id"], url),
 				r"ERROR: [a-zA-Z0-9\-_]+: YouTube said: Unable to extract video data": lambda: logging.error("Downloading episode id=%s (%s) failed. Unable to extract video data.", episode["id"], url),  # ExtractorError
 				r"ERROR: unable to download video data": lambda: logging.error("Downloading episode id=%s (%s) failed. Unable to download video data.", episode["id"], url),  # ExtractorError
-				r"ERROR: giving up after [0-9]+ retries": lambda: logging.error("Downloading episode id=%s (%s) failed. Max retries exceeded.", episode["id"], url),  # DownloadError
+				r"ERROR: giving up after (?P<num>[0-9]+) retries": lambda num: logging.error("Downloading episode id=%s (%s) failed. Max retries (%s) exceeded.", episode["id"], url, num),  # DownloadError
 				r"ERROR: This video is not available in your country.": lambda: logging.error("Downloading episode id=%s (%s) failed. Video geo-blocked.", episode["id"], url),  # ExtractorError
-				r"ERROR: Unable to download webpage: HTTP Error 429: Too Many Requests (.*)": error_too_many_requests,  # DownloadError
+				r"ERROR: Unable to download webpage: HTTP Error 429: Too Many Requests (?P<msg>.*)": error_too_many_requests,  # DownloadError
 				r"ERROR: Video unavailable\nThis video contains content from (?P<owner>.*), who has blocked it on copyright grounds\.": lambda owner: logging.error("Downloading episode id=%s (%s) failed. Video blocked by %s on copyright grounds.", episode["id"], url, owner),  # DownloadError
 				r"ERROR: Video unavailable\nThis video contains content from (?P<owner>.*), who has blocked it in your country on copyright grounds\.": lambda owner: logging.error("Downloading episode id=%s (%s) failed. Video blocked by %s in this country on copyright grounds.", episode["id"], url, owner),  # DownloadError
 			}  # type: Dict[str, Callable[..., None]]
@@ -677,8 +687,6 @@ class LocalBackend(Backend):
 	def __init__(self, path):
 		# type: (Path, ) -> None
 
-		from unqlite import UnQLite
-
 		if not path.is_file():
 			raise FileNotFoundError(errno.ENOENT, strerror(errno.ENOENT), fspath(path))
 
@@ -688,16 +696,7 @@ class LocalBackend(Backend):
 	def create(cls, path, verbose=False):
 		# type: (Path, bool) -> None
 
-		from genutility.iter import progress as _progress
-		from unqlite import UnQLite
-
 		api = RBTVAPI()
-
-		if verbose:
-			progress = _progress
-		else:
-			def progress(it, *args, **kwargs):
-				return it
 
 		with UnQLite(fspath(path)) as db:
 
@@ -718,7 +717,7 @@ class LocalBackend(Backend):
 			shows.store(all_shows)
 
 			episodes.create()
-			for show in progress(unqlite_all(shows), extra_info_callback=lambda i, l: "processing shows"):
+			for show in progress(unqlite_all(shows), extra_info_callback=lambda i, l: "processing shows", disable=not verbose):
 				show_id = show["id"]
 				try:
 					all_episodes = list(episode_iter(api.get_episodes_by_show(show_id)))
@@ -1035,7 +1034,7 @@ def main():
 	parser.add_argument("-v", "--verbose", action="store_true")
 	parser.add_argument("--version", action="version", version=__version__)
 	parser.add_argument("--db-path", default=DEFAULT_DB_PATH, type=Path, help="Path to the database file for local backend")
-	parser.add_argument("--backend", default=DEFAULT_BACKEND, choices=("local", "live"), help="Query data from online live api or from locally cached backend")
+	parser.add_argument("--backend", default=DEFAULT_BACKEND, choices=ALL_BACKENDS, help="Query data from online live api or from locally cached backend")
 	subparsers = parser.add_subparsers(dest="command")
 	subparsers.required = True
 
@@ -1123,6 +1122,10 @@ def main():
 			parser.error(f"{e}. Run `dump` first.")
 
 	elif args.command == "dump":
+
+		if args.backend != "local":
+			parser.error("`dump` requires `--backend local`")
+
 		LocalBackend.create(args.db_path, verbose=args.progress)
 
 if __name__ == "__main__":
