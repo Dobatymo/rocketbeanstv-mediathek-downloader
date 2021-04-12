@@ -14,13 +14,15 @@ from os import fspath, strerror
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from dateutil.parser import isoparse
 from genutility.iter import progress
-from rbtv import RBTVAPI, HTTPError, batch_iter, bohne_name_to_id, name_of_season, parse_datetime, show_name_to_id
+from rbtv import RBTVAPI, HTTPError, batch_iter, bohne_name_to_id, name_of_season, show_name_to_id
 from youtube_dl import DEFAULT_OUTTMPL, YoutubeDL
 from youtube_dl.utils import DownloadError, sanitize_filename
 
 if TYPE_CHECKING:
 	from argparse import Namespace
+	from datetime import datetime
 	from typing import (Any, Callable, Dict, Iterable, Iterator, List, Optional, Sequence, Set, TextIO, Tuple, TypeVar,
 	                    Union)
 
@@ -111,6 +113,14 @@ def is_in_season(episode):
 	# type: (JsonDict, ) -> bool
 
 	return bool(episode.get("seasonId"))
+
+def parse_datetime(datestr):
+	# type: (Optional[str], ) -> Optional[datetime]
+
+	if not datestr:
+		return None
+
+	return isoparse(datestr)
 
 class RBTVDownloader(object):
 

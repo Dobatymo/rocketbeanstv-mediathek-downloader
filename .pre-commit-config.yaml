@@ -5,7 +5,12 @@ repos:
       - id: check-json
       - id: check-yaml
       - id: check-toml
+      - id: check-case-conflict
+      - id: check-added-large-files
       - id: debug-statements
+      - id: requirements-txt-fixer
+      - id: mixed-line-ending
+        args: ["--fix=no"]
       - id: trailing-whitespace
       - id: end-of-file-fixer
   - repo: https://github.com/PyCQA/isort
@@ -23,6 +28,7 @@ repos:
       - id: mypy
         additional_dependencies:
           - genutility>=0.0.70
+          - python-dateutil
           - rbtv-api>=0.0.8
           - unqlite>=0.9.2
-          - youtube-dl>=2021.3.14
+          - youtube-dl>=2021.4.1
