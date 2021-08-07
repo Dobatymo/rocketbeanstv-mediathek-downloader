@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from dateutil.parser import isoparse
+from genutility.args import is_file
 from genutility.iter import progress
 from rbtv import RBTVAPI, HTTPError, batch_iter, bohne_name_to_id, name_of_season, show_name_to_id
 from youtube_dl import DEFAULT_OUTTMPL, YoutubeDL
@@ -127,8 +128,8 @@ class RBTVDownloader(object):
 	all = "all"
 
 	def __init__(self, backend, basepath=DEFAULT_BASEPATH, outdirtpl=DEFAULT_OUTDIRTPL, outtmpl=DEFAULT_OUTTMPL,
-		format=DEFAULT_FORMAT, missing_value=DEFAULT_MISSING_VALUE, record_path=None, retries=DEFAULT_RETRIES):
-		# type: (Backend, Path, str, str, Optional[str], str, Optional[str], int) -> None
+		format=DEFAULT_FORMAT, missing_value=DEFAULT_MISSING_VALUE, record_path=None, retries=DEFAULT_RETRIES, cookiefile=None):
+		# type: (Backend, Path, str, str, Optional[str], str, Optional[str], int, Optional[str]) -> None
 
 		self.backend = backend
 		self.basepath = basepath
@@ -139,6 +140,7 @@ class RBTVDownloader(object):
 		self.retries = retries
 		self.writeannotations = False
 		self.writesubtitles = False
+		self.cookiefile = cookiefile
 
 		if record_path:
 			self.downloaded_episodes = set(self._parse_record_file(record_path))
@@ -258,6 +260,7 @@ class RBTVDownloader(object):
 				"retries": self.retries,
 				"writeannotations": self.writeannotations,
 				"writesubtitles": self.writesubtitles,
+				"cookiefile": self.cookiefile,
 			}
 
 			def error_too_many_requests(msg):
@@ -277,6 +280,7 @@ class RBTVDownloader(object):
 				r"ERROR: Unable to download webpage: HTTP Error 429: Too Many Requests (?P<msg>.*)": error_too_many_requests,  # DownloadError
 				r"ERROR: Video unavailable\nThis video contains content from (?P<owner>.*), who has blocked it on copyright grounds\.": lambda owner: logging.error("Downloading episode id=%s (%s) failed. Video blocked by %s on copyright grounds.", episode["id"], url, owner),  # DownloadError
 				r"ERROR: Video unavailable\nThis video contains content from (?P<owner>.*), who has blocked it in your country on copyright grounds\.": lambda owner: logging.error("Downloading episode id=%s (%s) failed. Video blocked by %s in this country on copyright grounds.", episode["id"], url, owner),  # DownloadError
+				r"ERROR: Video unavailable\nThis video is private\.": lambda owner: logging.error("Downloading episode id=%s (%s) failed. Video is private.", episode["id"], url),  # DownloadError
 			}  # type: Dict[str, Callable[..., None]]
 
 			with YoutubeDL(ydl_opts) as ydl:
@@ -915,7 +919,7 @@ def download(args):
 	# type: (Namespace, ) -> None
 
 	with get_backend(args) as backend:
-		with RBTVDownloader(backend, args.basepath, args.outdirtpl, args.outtmpl, args.format, args.missing_value, args.record_path) as rbtv:
+		with RBTVDownloader(backend, args.basepath, args.outdirtpl, args.outtmpl, args.format, args.missing_value, args.record_path, args.retries, args.cookies) as rbtv:
 
 			if args.episode_id:
 				rbtv.download_episodes(args.episode_id)
@@ -1069,6 +1073,7 @@ def main():
 	parser_a.add_argument("--missing-value", default=DEFAULT_MISSING_VALUE, help="Value used for --outdirtpl if field is not available.")
 	parser_a.add_argument("--record-path", metavar="PATH", default=None, type=Path, help="File path where successful downloads are recorded. These episodes will be skipped if downloaded again.")
 	parser_a.add_argument("--retries", metavar="N", default=DEFAULT_RETRIES, type=int, help="Retry failed downloads N times.")
+	parser_a.add_argument("--cookies", type=is_file, default=None, help="File name where cookies should be read from and dumped to.")
 
 	parser_b = subparsers.add_parser("browse", help="browse mediathek", formatter_class=ArgumentDefaultsHelpFormatter)
 	group = parser_b.add_mutually_exclusive_group(required=True)
@@ -1101,6 +1106,9 @@ def main():
 		logging.basicConfig(level=logging.INFO)
 
 	if args.command == "download":
+
+		if args.cookies:
+			args.cookies = fspath(args.cookies)
 
 		if args.bohne_num <= 0:
 			parser.error("--bohne-num must be strictly greater than 0")
