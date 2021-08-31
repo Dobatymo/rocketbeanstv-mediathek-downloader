@@ -42,7 +42,7 @@ else:
 	DEFAULT_BACKEND = "local"
 	ALL_BACKENDS = ["local", "live"]
 
-__version__ = "0.7"
+__version__ = "0.8"
 
 DEFAULT_BASEPATH = Path(".")
 DEFAULT_OUTDIRTPL = "{show_name}/{season_name}"

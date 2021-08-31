@@ -21,6 +21,7 @@ usage: rbtv-mediathek.pyz download [-h]
                                   [--format FORMAT]
                                   [--missing-value MISSING_VALUE]
                                   [--record-path PATH] [--retries N]
+                                  [--cookies COOKIES]
 
 optional arguments:
   -h, --help            show this help message and exit
@@ -72,6 +73,8 @@ optional arguments:
                         These episodes will be skipped if downloaded again.
                         (default: None)
   --retries N           Retry failed downloads N times. (default: 10)
+  --cookies COOKIES     File name where cookies should be read from and dumped
+                        to. (default: None)
 ```
 
 #### Examples
