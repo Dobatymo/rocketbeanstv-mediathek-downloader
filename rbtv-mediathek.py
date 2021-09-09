@@ -1,9 +1,10 @@
-from __future__ import generator_stop
+from __future__ import annotations, generator_stop
 
 import errno
 import json
 import logging
 import re
+import sqlite3
 import time
 import warnings
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser, ArgumentTypeError
@@ -12,20 +13,20 @@ from itertools import islice
 from operator import itemgetter
 from os import fspath, strerror
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import (TYPE_CHECKING, Any, Callable, Dict, Iterable, Iterator, List, Optional, Sequence, Set, Tuple,
+                    TypeVar, Union)
 
+from appdirs import user_data_dir
 from dateutil.parser import isoparse
 from genutility.args import is_file
 from genutility.iter import progress
 from rbtv import RBTVAPI, HTTPError, batch_iter, bohne_name_to_id, name_of_season, show_name_to_id
-from youtube_dl import DEFAULT_OUTTMPL, YoutubeDL
-from youtube_dl.utils import DownloadError, sanitize_filename
+from youtube_dl import YoutubeDL
+from youtube_dl.utils import DownloadError, UnavailableVideoError, sanitize_filename
 
 if TYPE_CHECKING:
 	from argparse import Namespace
 	from datetime import datetime
-	from typing import (Any, Callable, Dict, Iterable, Iterator, List, Optional, Sequence, Set, TextIO, Tuple, TypeVar,
-	                    Union)
 
 	import unqlite
 
@@ -44,12 +45,18 @@ else:
 
 __version__ = "0.8"
 
+APP_NAME = "rocketbeanstv-mediathek-downloader"
+APP_AUTHOR = "Dobatymo"
+
 DEFAULT_BASEPATH = Path(".")
+DEFAULT_RECORD_PATH = Path(user_data_dir(APP_NAME, APP_AUTHOR)) / "rbtv.sqlite"
 DEFAULT_OUTDIRTPL = "{show_name}/{season_name}"
+DEFAULT_OUTTMPL = "%(title)s-%(id)s.%(format_id)s.%(ext)s"
 DEFAULT_MISSING_VALUE = "-"
 DEFAULT_RETRIES = 10
 DEFAULT_DB_PATH = Path("rbtv.udb")
 TOO_MANY_REQUESTS_DELAY = 60
+DEFAULT_TOKEN_REGEX = r"^.*-([0-9A-Za-z_-]{10}[048AEIMQUYcgkosw])\.[0-9+]+\.[0-9a-zA-Z]{3,4}$"
 
 # similar to "bestvideo+bestaudio/best", but with improved fallback to "best"
 # if separate streams are not possible
@@ -105,67 +112,79 @@ def posint(s):
 
 	return number
 
-def episode_iter(eps_combined):
-	# type: (JsonDict, ) -> Iterator[JsonDict]
+def episode_iter(eps_combined: JsonDict) -> Iterator[JsonDict]:
 
 	return batch_iter(eps_combined, "episodes")
 
-def is_in_season(episode):
-	# type: (JsonDict, ) -> bool
+def is_in_season(episode: JsonDict) -> bool:
 
 	return bool(episode.get("seasonId"))
 
-def parse_datetime(datestr):
-	# type: (Optional[str], ) -> Optional[datetime]
+def parse_datetime(datestr: Optional[str]) -> Optional[datetime]:
 
 	if not datestr:
 		return None
 
 	return isoparse(datestr)
 
-class RBTVDownloader(object):
+class Records:
 
-	all = "all"
+	def insert_episode(self, episode_id: int) -> None:
+		raise NotImplementedError
 
-	def __init__(self, backend, basepath=DEFAULT_BASEPATH, outdirtpl=DEFAULT_OUTDIRTPL, outtmpl=DEFAULT_OUTTMPL,
-		format=DEFAULT_FORMAT, missing_value=DEFAULT_MISSING_VALUE, record_path=None, retries=DEFAULT_RETRIES, cookiefile=None):
-		# type: (Backend, Path, str, str, Optional[str], str, Optional[str], int, Optional[str]) -> None
+	def is_episode_complete(self, episode_id: int) -> bool:
+		raise NotImplementedError
 
-		self.backend = backend
-		self.basepath = basepath
-		self.outdirtpl = outdirtpl
-		self.outtmpl = outtmpl
-		self.format = format
-		self.missing_value = missing_value
-		self.retries = retries
-		self.writeannotations = False
-		self.writesubtitles = False
-		self.cookiefile = cookiefile
+	def remove_episode(self, episode_id: int) -> bool:
+		raise NotImplementedError
 
-		if record_path:
-			self.downloaded_episodes = set(self._parse_record_file(record_path))
-			self.record_file = open(record_path, "a", encoding="utf-8")  # type: Optional[TextIO]
-		else:
-			self.downloaded_episodes = set()
-			self.record_file = None
+	def insert_part(self, episode_id: int, episode_part: int, youtube_token: Optional[str]=None, local_path: Optional[str]=None, info: Optional[Dict[str, Any]]=None) -> None:
+		raise NotImplementedError
 
-	def close(self):
-		# type: () -> None
+	def is_part_complete(self, episode_id: int, episode_part: int) -> bool:
+		raise NotImplementedError
 
-		if self.record_file:
-			self.record_file.close()
+	def remove_part(self, episode_id: int, episode_part: int) -> bool:
+		raise NotImplementedError
+
+	def close(self) -> None:
+		pass
 
 	def __enter__(self):
-		# type: () -> RBTVDownloader
-
 		return self
 
 	def __exit__(self, *args):
 		self.close()
 
+class MemoryRecords(Records):
+
+	all = "all"
+
+	def __init__(self) -> None:
+		self.downloaded_episodes: Set[Union[int, Tuple[int, int]]] = set()
+
+	def insert_episode(self, episode_id: int) -> None:
+		self.downloaded_episodes.add(episode_id)
+
+	def is_episode_complete(self, episode_id: int) -> bool:
+		return episode_id in self.downloaded_episodes
+
+	def insert_part(self, episode_id: int, episode_part: int, youtube_token: Optional[str]=None, local_path: Optional[str]=None, info: Optional[Dict[str, Any]]=None) -> None:
+		self.downloaded_episodes.add((episode_id, episode_part))
+
+	def is_part_complete(self, episode_id: int, episode_part: int) -> bool:
+		return (episode_id, episode_part) in self.downloaded_episodes
+
+class PlaintextRecords(Records):
+
+	all = "all"
+
+	def __init__(self, path: str) -> None:
+		self.downloaded_episodes = set(self._parse_record_file(path))
+		self.record_file = open(path, "a", encoding="utf-8")
+
 	@classmethod
-	def _parse_record_file(cls, path):
-		# type: (str, ) -> Iterator[Union[int, Tuple[int, int]]]
+	def _parse_record_file(cls, path: str) -> Iterator[Union[int, Tuple[int, int]]]:
 
 		try:
 			with open(path, "r", encoding="utf-8") as fr:
@@ -178,33 +197,123 @@ class RBTVDownloader(object):
 		except FileNotFoundError:
 			return
 
-	def _record_id(self, episode_id, episode_part=None):
-		# type: (int, Optional[int]) -> None
+	def insert_episode(self, episode_id: int) -> None:
+		self.downloaded_episodes.add(episode_id)
 
-		if episode_part:
-			self.downloaded_episodes.add((episode_id, episode_part))
-		else:
-			self.downloaded_episodes.add(episode_id)
+		self.record_file.write("{} {}\n".format(episode_id, self.all))
+		self.record_file.flush()
 
-		if self.record_file:
-			self.record_file.write("{} {}\n".format(episode_id, episode_part or self.all))
-			self.record_file.flush()
+	def is_episode_complete(self, episode_id: int) -> bool:
+		return episode_id in self.downloaded_episodes
 
-	def _check_record(self, episode_id, episode_part=None):
-		# type: (int, Optional[int]) -> bool
+	def insert_part(self, episode_id: int, episode_part: int, youtube_token: Optional[str]=None, local_path: Optional[str]=None, info: Optional[Dict[str, Any]]=None) -> None:
+		self.downloaded_episodes.add((episode_id, episode_part))
 
-		if episode_part:
-			return (episode_id, episode_part) in self.downloaded_episodes
-		else:
-			return episode_id in self.downloaded_episodes
+		self.record_file.write("{} {}\n".format(episode_id, episode_part))
+		self.record_file.flush()
 
-	def _download_episode(self, episode):
-		# type: (JsonDict, ) -> bool
+	def is_part_complete(self, episode_id: int, episode_part: int) -> bool:
+		return (episode_id, episode_part) in self.downloaded_episodes
+
+	def close(self) -> None:
+		self.record_file.close()
+
+class SqliteRecords(Records):
+
+	def __init__(self, path) -> None:
+		self.con = sqlite3.connect(path)
+		self.create_tables()
+
+	def create_tables(self) -> None:
+		with self.con:
+			cur = self.con.cursor()
+			cur.execute("""CREATE TABLE IF NOT EXISTS parts (
+				episode_id INTEGER NOT NULL,
+				episode_part INTEGER NOT NULL,
+				youtube_token TEXT NOT NULL UNIQUE,
+				local_path TEXT NOT NULL UNIQUE,
+				info JSON NULL,
+				PRIMARY KEY (episode_id, episode_part)
+			)""")
+			cur.execute("""CREATE TABLE IF NOT EXISTS episodes (
+				episode_id INTEGER PRIMARY KEY
+			)""")
+
+	def insert_episode(self, episode_id: int) -> None:
+		with self.con:
+			cur = self.con.cursor()
+			cur.execute("INSERT INTO episodes (episode_id) VALUES (?);", (episode_id, ))
+
+	def is_episode_complete(self, episode_id: int) -> bool:
+		with self.con:
+			cur = self.con.cursor()
+			return bool(list(cur.execute("SELECT episode_id FROM episodes WHERE episode_id = ?;", (episode_id, ))))
+
+	def remove_episode(self, episode_id: int) -> bool:
+		with self.con:
+			cur = self.con.cursor()
+			cur.execute("DELETE FROM episodes WHERE episode_id = ?;", (episode_id, ))
+			return bool(cur.rowcount)
+
+	def insert_part(self, episode_id: int, episode_part: int, youtube_token: Optional[str]=None, local_path: Optional[str]=None, info: Optional[Dict[str, Any]]=None) -> None:
+		with self.con:
+			cur = self.con.cursor()
+			cur.execute("""INSERT INTO parts (episode_id, episode_part, youtube_token, local_path, info)
+				VALUES (?, ?, ?, ?, ?);
+			""", (episode_id, episode_part, youtube_token, local_path, json.dumps(info, ensure_ascii=False))) # needs json(?)
+
+	def is_part_complete(self, episode_id: int, episode_part: int) -> bool:
+		with self.con:
+			cur = self.con.cursor()
+			return bool(list(cur.execute("SELECT episode_id, episode_part FROM parts WHERE episode_id = ? AND episode_part = ?;", (episode_id, episode_part))))
+
+	def remove_part(self, episode_id: int, episode_part: int) -> bool:
+		with self.con:
+			cur = self.con.cursor()
+			cur.execute("DELETE FROM parts WHERE episode_id = ? AND episode_part = ?;", (episode_id, episode_part))
+			return bool(cur.rowcount)
+
+	def _iter(self):
+		with self.con:
+			cur = self.con.cursor()
+			for episode_id, episode_part, youtube_token, local_path, info in cur.execute("SELECT episode_id, episode_part, youtube_token, local_path, info FROM parts;"):
+				yield episode_id, episode_part, youtube_token, local_path, json.loads(info)
+
+	def __iter__(self):
+		return self._iter()
+
+	def close(self) -> None:
+		self.con.close()
+
+	def execute(self, query, args=()):
+		with self.con:
+			cur = self.con.cursor()
+			for row in cur.execute(query, args):
+				yield row
+
+class RBTVDownloader(object):
+
+	def __init__(self, backend: Backend, records: Records, basepath: Path=DEFAULT_BASEPATH, outdirtpl: str=DEFAULT_OUTDIRTPL, outtmpl: str=DEFAULT_OUTTMPL, format: Optional[str]=DEFAULT_FORMAT, missing_value: str=DEFAULT_MISSING_VALUE, retries: int=DEFAULT_RETRIES, cookiefile: Optional[str]=None) -> None:
+
+		self.backend = backend
+		self.records = records
+		self.basepath = basepath
+		self.outdirtpl = outdirtpl
+		self.outtmpl = outtmpl
+		self.format = format
+		self.missing_value = missing_value
+		self.retries = retries
+		self.cookiefile = cookiefile
+
+		self.writeannotations = False
+		self.writesubtitles = False
+
+	def _download_episode(self, episode: JsonDict) -> bool:
 
 		in_season = is_in_season(episode)
 		episode_id = int(episode["id"])
 
-		if self._check_record(episode_id):
+		if self.records.is_episode_complete(episode_id):
 			logging.info("Episode %s was already downloaded", episode_id)
 			return False
 
@@ -242,7 +351,7 @@ class RBTVDownloader(object):
 		all_done = True
 		for episode_part, youtube_token in enumerate(episode["youtubeTokens"]):
 
-			if self._check_record(episode_id, episode_part):
+			if self.records.is_part_complete(episode_id, episode_part):
 				logging.info("Episode %s part %s was already downloaded", episode_id, episode_part)
 				continue
 
@@ -253,6 +362,8 @@ class RBTVDownloader(object):
 
 			url = youtube_token_to_url(youtube_token)
 			tpl_map["episode_part"] = episode_part
+
+			assert not set(OUTDIRTPL_KEYS) - set(tpl_map.keys())
 
 			ydl_opts = {
 				"outtmpl": str(self.basepath / self.outdirtpl.format(**tpl_map) / self.outtmpl.format(**tpl_map)),
@@ -266,26 +377,31 @@ class RBTVDownloader(object):
 			def error_too_many_requests(msg):
 				# type: (str, ) -> None
 
-				logging.error("Downloading episode id=%s (%s) failed. HTTP Error 429: Too Many Requests: %s. Waiting for %s seconds.", episode["id"], url, msg, TOO_MANY_REQUESTS_DELAY)
+				logging.error("Downloading episode id=%s (%s) failed. HTTP Error 429: Too Many Requests: %s. Waiting for %s seconds.", episode_id, url, msg, TOO_MANY_REQUESTS_DELAY)
 				time.sleep(TOO_MANY_REQUESTS_DELAY)
 
 			errors = {
-				r"ERROR: Unsupported URL": lambda: logging.error("Downloading episode id=%s (%s) is not supported", episode["id"], url),  # UnsupportedError
-				r"ERROR: Incomplete YouTube ID": lambda: logging.error("YouTube ID of episode id=%s (%s) looks incomplete", episode["id"], youtube_token),  # ExtractorError
-				r"ERROR: Did not get any data blocks": lambda: logging.error("Downloading episode id=%s (%s) failed. Did not get any data blocks.", episode["id"], url),
-				r"ERROR: [a-zA-Z0-9\-_]+: YouTube said: Unable to extract video data": lambda: logging.error("Downloading episode id=%s (%s) failed. Unable to extract video data.", episode["id"], url),  # ExtractorError
-				r"ERROR: unable to download video data": lambda: logging.error("Downloading episode id=%s (%s) failed. Unable to download video data.", episode["id"], url),  # ExtractorError
-				r"ERROR: giving up after (?P<num>[0-9]+) retries": lambda num: logging.error("Downloading episode id=%s (%s) failed. Max retries (%s) exceeded.", episode["id"], url, num),  # DownloadError
-				r"ERROR: This video is not available in your country.": lambda: logging.error("Downloading episode id=%s (%s) failed. Video geo-blocked.", episode["id"], url),  # ExtractorError
+				r"ERROR: Unsupported URL": lambda: logging.error("Downloading episode id=%s (%s) is not supported", episode_id, url),  # UnsupportedError
+				r"ERROR: Incomplete YouTube ID": lambda: logging.error("YouTube ID of episode id=%s (%s) looks incomplete", episode_id, youtube_token),  # ExtractorError
+				r"ERROR: Did not get any data blocks": lambda: logging.error("Downloading episode id=%s (%s) failed. Did not get any data blocks.", episode_id, url),
+				r"ERROR: [a-zA-Z0-9\-_]+: YouTube said: Unable to extract video data": lambda: logging.error("Downloading episode id=%s (%s) failed. Unable to extract video data.", episode_id, url),  # ExtractorError
+				r"ERROR: unable to download video data": lambda: logging.error("Downloading episode id=%s (%s) failed. Unable to download video data.", episode_id, url),  # ExtractorError
+				r"ERROR: giving up after (?P<num>[0-9]+) retries": lambda num: logging.error("Downloading episode id=%s (%s) failed. Max retries (%s) exceeded.", episode_id, url, num),  # DownloadError
+				r"ERROR: This video is not available in your country.": lambda: logging.error("Downloading episode id=%s (%s) failed. Video geo-blocked.", episode_id, url),  # ExtractorError
 				r"ERROR: Unable to download webpage: HTTP Error 429: Too Many Requests (?P<msg>.*)": error_too_many_requests,  # DownloadError
-				r"ERROR: Video unavailable\nThis video contains content from (?P<owner>.*), who has blocked it on copyright grounds\.": lambda owner: logging.error("Downloading episode id=%s (%s) failed. Video blocked by %s on copyright grounds.", episode["id"], url, owner),  # DownloadError
-				r"ERROR: Video unavailable\nThis video contains content from (?P<owner>.*), who has blocked it in your country on copyright grounds\.": lambda owner: logging.error("Downloading episode id=%s (%s) failed. Video blocked by %s in this country on copyright grounds.", episode["id"], url, owner),  # DownloadError
-				r"ERROR: Video unavailable\nThis video is private\.": lambda owner: logging.error("Downloading episode id=%s (%s) failed. Video is private.", episode["id"], url),  # DownloadError
+				r"ERROR: Video unavailable\nThis video contains content from (?P<owner>.*), who has blocked it on copyright grounds\.": lambda owner: logging.error("Downloading episode id=%s (%s) failed. Video blocked by %s on copyright grounds.", episode_id, url, owner),  # DownloadError
+				r"ERROR: Video unavailable\nThis video contains content from (?P<owner>.*), who has blocked it in your country on copyright grounds\.": lambda owner: logging.error("Downloading episode id=%s (%s) failed. Video blocked by %s in this country on copyright grounds.", episode_id, url, owner),  # DownloadError
+				r"ERROR: Video unavailable\nThis video is private\.": lambda owner: logging.error("Downloading episode id=%s (%s) failed. Video is private.", episode_id, url),  # DownloadError
 			}  # type: Dict[str, Callable[..., None]]
 
 			with YoutubeDL(ydl_opts) as ydl:
 				try:
-					ydl.download([url])
+					# retcode = ydl.download([url])
+					res = ydl.extract_info(url)
+					filename = ydl.prepare_filename(res) # only works correctly if only one format is downloaded
+					logging.info("Downloaded E%sP%s (%s) to <%s>.", episode_id, episode_part, youtube_token, filename)
+				except UnavailableVideoError:
+					logging.error("Downloading episode id=%s (%s) failed. Format unavailable.", episode_id, url)
 				except DownloadError as e:
 					all_done = False
 					errmsg = e.args[0]
@@ -299,10 +415,10 @@ class RBTVDownloader(object):
 						logging.error("errormsg: %r", errmsg)
 						raise
 				else:
-					self._record_id(episode_id, episode_part)
+					self.records.insert_part(episode_id, episode_part, youtube_token, filename, res)
 
 		if all_done:
-			self._record_id(episode_id)
+			self.records.insert_episode(episode_id)
 
 		return True
 
@@ -905,6 +1021,14 @@ class LocalBackend(Backend):
 
 		return shows, episodes, posts
 
+	def get_episodes_by_youtube_token(self, youtube_tokens, sort_by=None, limit=None):
+		# type: (Iterable[str], Optional[str], Optional[int]) -> Iterator[JsonDict]
+
+		youtube_tokens = set(youtube_tokens)
+		episodes = self.db.collection("episodes")
+		return sort_by_item(episodes.filter(lambda doc: bool(set(doc["youtubeTokens"]) & youtube_tokens)), sort_by, limit)
+
+
 def get_backend(args):
 	# type: (Namespace, ) -> Backend
 
@@ -918,27 +1042,32 @@ def get_backend(args):
 def download(args):
 	# type: (Namespace, ) -> None
 
-	with get_backend(args) as backend:
-		with RBTVDownloader(backend, args.basepath, args.outdirtpl, args.outtmpl, args.format, args.missing_value, args.record_path, args.retries, args.cookies) as rbtv:
+	if args.record_path is None:
+		records: Records = MemoryRecords()
+	else:
+		records = SqliteRecords(args.record_path)
 
-			if args.episode_id:
-				rbtv.download_episodes(args.episode_id)
-			elif args.season_id:
-				rbtv.download_seasons(args.season_id)
-			elif args.show_id:
-				rbtv.download_shows(args.show_id, args.unsorted_only)
-			elif args.show_name:
-				rbtv.download_shows_by_name(args.show_name, args.unsorted_only)
-			elif args.all_shows:
-				rbtv.download_all_shows(args.unsorted_only)
-			elif args.bohne_id:
-				rbtv.download_bohnen(args.bohne_id, args.bohne_num, args.bohne_exclusive)
-			elif args.bohne_name:
-				rbtv.download_bohnen_by_name(args.bohne_name, args.bohne_num, args.bohne_exclusive)
-			elif args.blog_id:
-				rbtv.download_blog_posts(args.blog_id)
-			elif args.all_blog:
-				rbtv.download_all_blog_posts()
+	with get_backend(args) as backend, records:
+		rbtv = RBTVDownloader(backend, records, args.basepath, args.outdirtpl, args.outtmpl, args.format, args.missing_value, args.retries, args.cookies)
+
+		if args.episode_id:
+			rbtv.download_episodes(args.episode_id)
+		elif args.season_id:
+			rbtv.download_seasons(args.season_id)
+		elif args.show_id:
+			rbtv.download_shows(args.show_id, args.unsorted_only)
+		elif args.show_name:
+			rbtv.download_shows_by_name(args.show_name, args.unsorted_only)
+		elif args.all_shows:
+			rbtv.download_all_shows(args.unsorted_only)
+		elif args.bohne_id:
+			rbtv.download_bohnen(args.bohne_id, args.bohne_num, args.bohne_exclusive)
+		elif args.bohne_name:
+			rbtv.download_bohnen_by_name(args.bohne_name, args.bohne_num, args.bohne_exclusive)
+		elif args.blog_id:
+			rbtv.download_blog_posts(args.blog_id)
+		elif args.all_blog:
+			rbtv.download_all_blog_posts()
 
 def browse(args):
 	# type: (Namespace, ) -> None
@@ -1035,6 +1164,101 @@ def browse(args):
 			for post in islice(posts, args.limit):
 				print_post_short(post)
 
+def reorganize(args):
+	# type: (Namespace, ) -> None
+
+	def get_untracked(basepath, records) -> Iterator[str]:
+
+		for path in basepath.rglob("*"):
+			if not path.is_file():
+				continue
+
+			relpath = fspath(path.relative_to(args.basepath))
+			tracked = bool(list(records.execute("SELECT episode_id FROM parts WHERE local_path = ?", (relpath, ))))
+			if not tracked:
+				yield relpath
+
+	with get_backend(args) as backend, SqliteRecords(args.record_path) as records:
+		if args.subcommand == "list-incomplete-episodes":
+			episodes_parts = set(row[0] for row in records.execute("SELECT DISTINCT episode_id FROM parts;"))
+			episodes_full = set(row[0] for row in records.execute("SELECT DISTINCT episode_id FROM episodes;"))
+
+			for episodes, message in [
+					(episodes_parts - episodes_full, "Episodes with missing parts ({})"),
+					(episodes_full - episodes_parts, "Completed episodes without a single part ({})")
+				]:
+				print(message.format(len(episodes)))
+				for episode in backend.get_episodes(episodes):
+					season = backend.get_season_info(episode)
+					print_episode_short(episode, season)
+
+		elif args.subcommand == "list-files":
+			for episode_id, episode_part, youtube_token, local_path, info in records:
+				print(episode_id, episode_part, youtube_token, local_path)
+
+		elif args.subcommand == "forget-missing-files":
+			forget: List[Tuple[int, int, str]] = []
+			for episode_id, episode_part, _, local_path, _ in records:
+				if not (args.basepath / local_path).exists():
+					forget.append((episode_id, episode_part, local_path))
+
+			from collections import defaultdict
+			episodes: Dict[int, List[str]] = defaultdict(list) # mypy ignore redefine
+			for episode_id, _, local_path in forget:
+				episodes[episode_id].append(local_path)
+
+			print(f"Removing {len(forget)} parts belonging to {len(episodes)} episodes")
+			for episode, filenames in zip(backend.get_episodes(episodes.keys()), episodes.values()):
+				season = backend.get_season_info(episode)
+				print_episode_short(episode, season)
+				for filename in filenames:
+					print("\t" + filename)
+
+			for episode_id, episode_part, _ in forget:
+				records.remove_episode(episode_id)
+				records.remove_part(episode_id, episode_part)
+
+		elif args.subcommand == "list-untracked-files":
+			for path in get_untracked(args.basepath, records):
+				print(path)
+
+		elif args.subcommand == "track-untracked-files":
+
+			tokenp = re.compile(args.regex)
+
+			def get_youtube_token_from_path(path: str):
+				m = tokenp.match(path)
+				if m:
+					return m.group(1)
+				else:
+					return None
+
+			for path in get_untracked(args.basepath, records):
+				youtube_token = get_youtube_token_from_path(path)
+				if youtube_token is None:
+					logging.warning(f"Could not extract youtube token from <{path}>")
+					continue
+
+				episodes = list(backend.get_episodes_by_youtube_token([youtube_token])) # mypy ignore redefine
+				if not episodes:
+					logging.warning("Could not find youtube token %s", youtube_token)
+				elif len(episodes) == 1:
+					episode = episodes[0]
+					episode_id = episode['id']
+					episode_part = episode['youtubeTokens'].index(youtube_token)
+					try:
+						records.insert_part(episode_id, episode_part, youtube_token, path, None)
+						season = backend.get_season_info(episode)
+						print_episode_short(episode, season)
+						print("\t" + path)
+					except sqlite3.IntegrityError:
+						logging.error("E%sP%s (%s) already in database", episode_id, episode_part, youtube_token)
+				else:
+					logging.error("Found more than 1 episode for %s", youtube_token)
+					for episode in episodes:
+						season = backend.get_season_info(episode)
+						print_episode_short(episode, season)
+
 def main():
 	# type: () -> None
 
@@ -1064,14 +1288,14 @@ def main():
 	group.add_argument("--blog-id", metavar="ID", nargs="+", type=int, help="Download blog post")
 	group.add_argument("--all-blog", action="store_true", help="Download all blog posts")
 	parser_a.add_argument("--unsorted-only", action="store_true", help=f"Only valid in combination with {show_params}. Downloads only unsorted episodes (episodes which are not categorized into seasons).")
-	parser_a.add_argument("--bohne-num", metavar="n", type=posint, default=1, help=f"Download episodes with at least n of the people specified by {bohne_params} present at the same time")
+	parser_a.add_argument("--bohne-num", metavar="N", type=posint, default=1, help=f"Download episodes with at least N of the people specified by {bohne_params} present at the same time")
 	parser_a.add_argument("--bohne-exclusive", action="store_true", help=f"If given, don't allow people other than {bohne_params} to be present")
 	parser_a.add_argument("--basepath", metavar="PATH", type=Path, default=DEFAULT_BASEPATH, help="Base output folder")
 	parser_a.add_argument("--outdirtpl", default=DEFAULT_OUTDIRTPL, help=f"Output folder relative to base folder. Can include the following placeholders: {', '.join(OUTDIRTPL_KEYS)}")
 	parser_a.add_argument("--outtmpl", default=DEFAULT_OUTTMPL, help="Output file path relative to output folder. Can include the same placeholders as '--outdirtpl' as well as youtube-dl placeholders. See youtube-dl output template: https://github.com/ytdl-org/youtube-dl#output-template")
 	parser_a.add_argument("--format", default=DEFAULT_FORMAT, help="Video/audio format. Defaults to 'bestvideo+bestaudio' with fallback to 'best'. See youtube-dl format selection: https://github.com/ytdl-org/youtube-dl#format-selection")
 	parser_a.add_argument("--missing-value", default=DEFAULT_MISSING_VALUE, help="Value used for --outdirtpl if field is not available.")
-	parser_a.add_argument("--record-path", metavar="PATH", default=None, type=Path, help="File path where successful downloads are recorded. These episodes will be skipped if downloaded again.")
+	parser_a.add_argument("--record-path", metavar="PATH", default=DEFAULT_RECORD_PATH, type=Path, help="File path where successful downloads are recorded. These episodes will be skipped if downloaded again.")
 	parser_a.add_argument("--retries", metavar="N", default=DEFAULT_RETRIES, type=int, help="Retry failed downloads N times.")
 	parser_a.add_argument("--cookies", type=is_file, default=None, help="File name where cookies should be read from and dumped to.")
 
@@ -1091,12 +1315,19 @@ def main():
 	parser_b.add_argument("--limit", metavar="N", type=int, default=None, help="Limit list output to N items")
 	parser_b.add_argument("--sort-by", type=str, choices=("id", "title", "showName", "firstBroadcastdate"), help="Sort output")
 	parser_b.add_argument("--unsorted-only", action="store_true", help=f"Only valid in combination with {show_params}. Only shows unsorted episodes (episodes which are not categorized into seasons).")
-	parser_b.add_argument("--bohne-num", metavar="n", type=posint, default=1, help=f"Show episodes with at least n of the people specified by {bohne_params} present at the same time")
+	parser_b.add_argument("--bohne-num", metavar="N", type=posint, default=1, help=f"Show episodes with at least N of the people specified by {bohne_params} present at the same time")
 	parser_b.add_argument("--bohne-exclusive", action="store_true", help=f"If given, don't allow people other than {bohne_params} to be present")
 	parser_b.add_argument("--episodes", action="store_true", help="Also display episodes when applicable (shows, Bohnen, ...)")
 
 	parser_c = subparsers.add_parser("dump", help="dump mediathek meta data for fast search", formatter_class=ArgumentDefaultsHelpFormatter)
 	parser_c.add_argument("--no-progress", dest="progress", action="store_false", help="Don't show progress when dumping database")
+
+	SUBCOMMANDS = ("list-incomplete-episodes", "list-files", "forget-missing-files", "list-untracked-files", "track-untracked-files")
+	parser_d = subparsers.add_parser("reorganize", help="Rename or move already downloaded files to match the titles/seasons online", formatter_class=ArgumentDefaultsHelpFormatter)
+	parser_d.add_argument("subcommand", choices=SUBCOMMANDS, help="Reorganization command")
+	parser_d.add_argument("--basepath", metavar="PATH", type=Path, default=DEFAULT_BASEPATH, help="Base output folder")
+	parser_d.add_argument("--record-path", metavar="PATH", default=DEFAULT_RECORD_PATH, type=Path, help="File path where successful downloads are recorded. These episodes will be skipped if downloaded again.")
+	parser_d.add_argument("--regex", default=DEFAULT_TOKEN_REGEX, help="Regex pattern to extract the youtube id from files. Used with `track-untracked-files`.")
 
 	args = parser.parse_args()
 
@@ -1145,6 +1376,9 @@ def main():
 			parser.error("`dump` requires `--backend local`")
 
 		LocalBackend.create(args.db_path, verbose=args.progress)
+
+	elif args.command == "reorganize":
+		reorganize(args)
 
 if __name__ == "__main__":
 	main()

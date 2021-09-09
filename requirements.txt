@@ -1,3 +1,4 @@
+appdirs
 genutility>=0.0.70
 python-dateutil
 rbtv-api>=0.0.8
