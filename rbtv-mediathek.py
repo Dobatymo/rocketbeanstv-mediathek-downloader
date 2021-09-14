@@ -13,8 +13,21 @@ from itertools import islice
 from operator import itemgetter
 from os import fspath, strerror
 from pathlib import Path
-from typing import (TYPE_CHECKING, Any, Callable, Dict, Iterable, Iterator, List, Optional, Sequence, Set, Tuple,
-                    TypeVar, Union)
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Dict,
+    Iterable,
+    Iterator,
+    List,
+    Optional,
+    Sequence,
+    Set,
+    Tuple,
+    TypeVar,
+    Union,
+)
 
 from appdirs import user_data_dir
 from dateutil.parser import isoparse
@@ -267,6 +280,7 @@ class PlaintextRecords(Records):
 
 class SqliteRecords(Records):
     def __init__(self, path) -> None:
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
         self.con = sqlite3.connect(path)
         self.create_tables()
 
@@ -275,18 +289,18 @@ class SqliteRecords(Records):
             cur = self.con.cursor()
             cur.execute(
                 """CREATE TABLE IF NOT EXISTS parts (
-				episode_id INTEGER NOT NULL,
-				episode_part INTEGER NOT NULL,
-				youtube_token TEXT NOT NULL UNIQUE,
-				local_path TEXT NOT NULL UNIQUE,
-				info JSON NULL,
-				PRIMARY KEY (episode_id, episode_part)
-			)"""
+                episode_id INTEGER NOT NULL,
+                episode_part INTEGER NOT NULL,
+                youtube_token TEXT NOT NULL,
+                local_path TEXT NOT NULL UNIQUE,
+                info JSON NULL,
+                PRIMARY KEY (episode_id, episode_part)
+            )"""
             )
             cur.execute(
                 """CREATE TABLE IF NOT EXISTS episodes (
-				episode_id INTEGER PRIMARY KEY
-			)"""
+                episode_id INTEGER PRIMARY KEY
+            )"""
             )
 
     def insert_episode(self, episode_id: int) -> None:
@@ -317,8 +331,8 @@ class SqliteRecords(Records):
             cur = self.con.cursor()
             cur.execute(
                 """INSERT INTO parts (episode_id, episode_part, youtube_token, local_path, info)
-				VALUES (?, ?, ?, ?, ?);
-			""",
+                VALUES (?, ?, ?, ?, ?);
+            """,
                 (episode_id, episode_part, youtube_token, local_path, json.dumps(info, ensure_ascii=False)),
             )  # needs json(?)
 
@@ -1421,7 +1435,8 @@ def reorganize(args):
 
                 episodes = list(backend.get_episodes_by_youtube_token([youtube_token]))  # mypy ignore redefine
                 if not episodes:
-                    logging.warning("Could not find youtube token %s", youtube_token)
+                    logging.warning("Could not find YouTube token %s", youtube_token)
+                    print("\t" + path)
                 elif len(episodes) == 1:
                     episode = episodes[0]
                     episode_id = episode["id"]
@@ -1438,6 +1453,7 @@ def reorganize(args):
                     for episode in episodes:
                         season = backend.get_season_info(episode)
                         print_episode_short(episode, season)
+                    print("\t" + path)
 
 
 def main():
@@ -1648,7 +1664,10 @@ def main():
         LocalBackend.create(args.db_path, verbose=args.progress)
 
     elif args.command == "reorganize":
-        reorganize(args)
+        try:
+            reorganize(args)
+        except FileNotFoundError as e:
+            parser.error(f"{e}. Run `dump` first.")
 
 
 if __name__ == "__main__":

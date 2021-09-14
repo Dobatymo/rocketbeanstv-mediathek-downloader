@@ -2,6 +2,6 @@
 line-length = 120
 
 [tool.isort]
-indent = "tab"
+profile = "black"
 src_paths = ["."]
 line_length = 120

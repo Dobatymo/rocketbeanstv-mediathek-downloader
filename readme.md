@@ -178,6 +178,12 @@ optional arguments:
 - Download episodes by season name instead of ID
 - Information about current events
 
+## Version migration
+
+### v0.8 to v0.9
+- `rbtv-mediathek.pyz dump`
+- `rbtv-mediathek.pyz reorganize track-untracked-files --basepath where/your/files/are`. If that fails `--regex` needs to be adjusted.
+
 ## Support RBTV
 
 <https://rocketbeans.tv/supporte-uns>
