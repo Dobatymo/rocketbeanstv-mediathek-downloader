@@ -287,20 +287,22 @@ class SqliteRecords(Records):
     def create_tables(self) -> None:
         with self.con:
             cur = self.con.cursor()
-            cur.execute(
-                """CREATE TABLE IF NOT EXISTS parts (
+            cur.executescript(
+                """
+                BEGIN TRANSACTION;
+                CREATE TABLE IF NOT EXISTS parts (
                 episode_id INTEGER NOT NULL,
                 episode_part INTEGER NOT NULL,
                 youtube_token TEXT NOT NULL,
-                local_path TEXT NOT NULL UNIQUE,
+                local_path TEXT NOT NULL,
                 info JSON NULL,
                 PRIMARY KEY (episode_id, episode_part)
-            )"""
-            )
-            cur.execute(
-                """CREATE TABLE IF NOT EXISTS episodes (
+                );
+                CREATE TABLE IF NOT EXISTS episodes (
                 episode_id INTEGER PRIMARY KEY
-            )"""
+                );
+                CREATE INDEX IF NOT EXISTS idx_parts_local_path ON parts (local_path);
+                COMMIT;"""
             )
 
     def insert_episode(self, episode_id: int) -> None:
@@ -1367,8 +1369,8 @@ def reorganize(args):
                 continue
 
             relpath = fspath(path.relative_to(args.basepath))
-            tracked = bool(list(records.execute("SELECT episode_id FROM parts WHERE local_path = ?", (relpath,))))
-            if not tracked:
+            tracked = list(records.execute("SELECT episode_id, episode_part FROM parts WHERE local_path = ?", (relpath,)))
+            if not bool(tracked):
                 yield relpath
 
     with get_backend(args) as backend, SqliteRecords(args.record_path) as records:
@@ -1430,30 +1432,23 @@ def reorganize(args):
             for path in get_untracked(args.basepath, records):
                 youtube_token = get_youtube_token_from_path(path)
                 if youtube_token is None:
-                    logging.warning(f"Could not extract youtube token from <{path}>")
+                    logging.error(f"Could not extract youtube token from <{path}>")
                     continue
 
                 episodes = list(backend.get_episodes_by_youtube_token([youtube_token]))  # mypy ignore redefine
-                if not episodes:
-                    logging.warning("Could not find YouTube token %s", youtube_token)
-                    print("\t" + path)
-                elif len(episodes) == 1:
-                    episode = episodes[0]
-                    episode_id = episode["id"]
-                    episode_part = episode["youtubeTokens"].index(youtube_token)
-                    try:
+                if episodes:
+                    if len(episodes) > 1:
+                        logging.warning("Found more than 1 episode for %s", youtube_token)
+                    for episode in episodes:
+                        episode_id = episode["id"]
+                        episode_part = episode["youtubeTokens"].index(youtube_token)
                         records.insert_part(episode_id, episode_part, youtube_token, path, None)
                         season = backend.get_season_info(episode)
                         print_episode_short(episode, season)
-                        print("\t" + path)
-                    except sqlite3.IntegrityError:
-                        logging.error("E%sP%s (%s) already in database", episode_id, episode_part, youtube_token)
                 else:
-                    logging.error("Found more than 1 episode for %s", youtube_token)
-                    for episode in episodes:
-                        season = backend.get_season_info(episode)
-                        print_episode_short(episode, season)
-                    print("\t" + path)
+                    logging.error("Could not find YouTube token %s", youtube_token)
+
+                print("\t" + path)
 
 
 def main():
