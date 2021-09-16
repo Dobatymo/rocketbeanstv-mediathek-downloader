@@ -28,6 +28,7 @@ from typing import (
     TypeVar,
     Union,
 )
+from collections import defaultdict
 
 from appdirs import user_data_dir
 from dateutil.parser import isoparse
@@ -61,13 +62,14 @@ __version__ = "0.8"
 APP_NAME = "rocketbeanstv-mediathek-downloader"
 APP_AUTHOR = "Dobatymo"
 
+APPDATA = Path(user_data_dir(APP_NAME, APP_AUTHOR))
 DEFAULT_BASEPATH = Path(".")
-DEFAULT_RECORD_PATH = Path(user_data_dir(APP_NAME, APP_AUTHOR)) / "rbtv.sqlite"
+DEFAULT_DB_PATH = APPDATA / "rbtv.udb"
+DEFAULT_RECORD_PATH = APPDATA / "rbtv.sqlite"
 DEFAULT_OUTDIRTPL = "{show_name}/{season_name}"
 DEFAULT_OUTTMPL = "%(title)s-%(id)s.%(format_id)s.%(ext)s"
 DEFAULT_MISSING_VALUE = "-"
 DEFAULT_RETRIES = 10
-DEFAULT_DB_PATH = Path("rbtv.udb")
 TOO_MANY_REQUESTS_DELAY = 60
 DEFAULT_TOKEN_REGEX = r"^.*-([0-9A-Za-z_-]{10}[048AEIMQUYcgkosw])\.[0-9+]+\.[0-9a-zA-Z]{3,4}$"
 
@@ -1397,8 +1399,6 @@ def reorganize(args):
                 if not (args.basepath / local_path).exists():
                     forget.append((episode_id, episode_part, local_path))
 
-            from collections import defaultdict
-
             episodes: Dict[int, List[str]] = defaultdict(list)  # mypy ignore redefine
             for episode_id, _, local_path in forget:
                 episodes[episode_id].append(local_path)
@@ -1429,26 +1429,50 @@ def reorganize(args):
                 else:
                     return None
 
+            token2path = defaultdict(set)
+            token2episode = defaultdict(list)
             for path in get_untracked(args.basepath, records):
                 youtube_token = get_youtube_token_from_path(path)
                 if youtube_token is None:
                     logging.error(f"Could not extract youtube token from <{path}>")
                     continue
+                token2path[youtube_token].add(path)
 
-                episodes = list(backend.get_episodes_by_youtube_token([youtube_token]))  # mypy ignore redefine
-                if episodes:
-                    if len(episodes) > 1:
-                        logging.warning("Found more than 1 episode for %s", youtube_token)
+            for episode in backend.get_episodes_by_youtube_token(token2path.keys()):
+                if len(episode["youtubeTokens"]) != len(set(episode["youtubeTokens"])):
+                    logging.error("Found duplicate parts: %s", episode["youtubeTokens"])
+                    season = backend.get_season_info(episode)
+                    print_episode_short(episode, season)
+                    continue
+
+                for token in episode["youtubeTokens"]:
+                    if token in token2path:
+                        token2episode[token].append(episode)
+
+            for token, paths in token2path.items():
+                try:
+                    episodes = token2episode[token]
+                except KeyError:
+                    logging.error("Could not find YouTube token %s", token)
+                    continue
+
+                if len(paths) == 1:
+                    path = list(paths)[0]
                     for episode in episodes:
                         episode_id = episode["id"]
-                        episode_part = episode["youtubeTokens"].index(youtube_token)
-                        records.insert_part(episode_id, episode_part, youtube_token, path, None)
+                        episode_part = episode["youtubeTokens"].index(token)
+                        try:
+                            records.insert_part(episode_id, episode_part, token, path, None)
+                        except sqlite3.IntegrityError as e:
+                            logging.warning("Failed to insert %s, %s: %s", episode_id, episode_part, e)
                         season = backend.get_season_info(episode)
-                        print_episode_short(episode, season)
+                        #print_episode_short(episode, season)
+                        #for path in paths:
+                        #    print("\t" + path)
                 else:
-                    logging.error("Could not find YouTube token %s", youtube_token)
-
-                print("\t" + path)
+                    logging.warning("Found %s files and %s episodes for token %s. Requires manual fix.", len(paths), len(episodes), token)
+                    for path in paths:
+                        print("\t" + path)
 
 
 def main():
