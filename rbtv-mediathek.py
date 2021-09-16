@@ -8,6 +8,7 @@ import sqlite3
 import time
 import warnings
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser, ArgumentTypeError
+from collections import defaultdict
 from functools import lru_cache
 from itertools import islice
 from operator import itemgetter
@@ -28,7 +29,6 @@ from typing import (
     TypeVar,
     Union,
 )
-from collections import defaultdict
 
 from appdirs import user_data_dir
 from dateutil.parser import isoparse
@@ -533,7 +533,8 @@ class RBTVDownloader(object):
                     # retcode = ydl.download([url])
                     res = ydl.extract_info(url)
                     filename = ydl.prepare_filename(res)  # only works correctly if only one format is downloaded
-                    logging.info("Downloaded E%sP%s (%s) to <%s>.", episode_id, episode_part, youtube_token, filename)
+                    relpath = fspath(Path(filename).relative_to(self.basepath))
+                    logging.info("Downloaded E%sP%s (%s) to <%s>.", episode_id, episode_part, youtube_token, relpath)
                 except UnavailableVideoError:
                     logging.error("Downloading episode id=%s (%s) failed. Format unavailable.", episode_id, url)
                 except DownloadError as e:
@@ -1371,7 +1372,9 @@ def reorganize(args):
                 continue
 
             relpath = fspath(path.relative_to(args.basepath))
-            tracked = list(records.execute("SELECT episode_id, episode_part FROM parts WHERE local_path = ?", (relpath,)))
+            tracked = list(
+                records.execute("SELECT episode_id, episode_part FROM parts WHERE local_path = ?", (relpath,))
+            )
             if not bool(tracked):
                 yield relpath
 
@@ -1439,6 +1442,7 @@ def reorganize(args):
                 token2path[youtube_token].add(path)
 
             for episode in backend.get_episodes_by_youtube_token(token2path.keys()):
+
                 if len(episode["youtubeTokens"]) != len(set(episode["youtubeTokens"])):
                     logging.error("Found duplicate parts: %s", episode["youtubeTokens"])
                     season = backend.get_season_info(episode)
@@ -1450,9 +1454,9 @@ def reorganize(args):
                         token2episode[token].append(episode)
 
             for token, paths in token2path.items():
-                try:
-                    episodes = token2episode[token]
-                except KeyError:
+
+                episodes: Optional[List[dict]] = token2episode.get(token)
+                if episodes is None:
                     logging.error("Could not find YouTube token %s", token)
                     continue
 
@@ -1464,13 +1468,20 @@ def reorganize(args):
                         try:
                             records.insert_part(episode_id, episode_part, token, path, None)
                         except sqlite3.IntegrityError as e:
-                            logging.warning("Failed to insert %s, %s: %s", episode_id, episode_part, e)
-                        season = backend.get_season_info(episode)
-                        #print_episode_short(episode, season)
-                        #for path in paths:
+                            logging.warning(
+                                "Failed to insert %s, %s [%s] <%s>: %s", episode_id, episode_part, token, path, e
+                            )
+                            season = backend.get_season_info(episode)
+                        # print_episode_short(episode, season)
+                        # for path in paths:
                         #    print("\t" + path)
                 else:
-                    logging.warning("Found %s files and %s episodes for token %s. Requires manual fix.", len(paths), len(episodes), token)
+                    logging.warning(
+                        "Found %s files and %s episodes for token %s. Requires manual fix.",
+                        len(paths),
+                        len(episodes),
+                        token,
+                    )
                     for path in paths:
                         print("\t" + path)
 
