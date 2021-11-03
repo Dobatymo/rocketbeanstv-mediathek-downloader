@@ -34,6 +34,7 @@ from appdirs import user_data_dir
 from dateutil.parser import isoparse
 from genutility.args import is_file
 from genutility.iter import progress
+from genutility.unqlite import query_by_field_intersect
 from rbtv import RBTVAPI, HTTPError, batch_iter, bohne_name_to_id, name_of_season, show_name_to_id
 from youtube_dl import YoutubeDL
 from youtube_dl.utils import DownloadError, UnavailableVideoError, sanitize_filename
@@ -451,7 +452,13 @@ class RBTVDownloader(object):
         }
 
         all_done = True
-        for episode_part, youtube_token in enumerate(episode["youtubeTokens"]):
+        try:
+            youtube_tokens = episode["youtubeTokens"]
+        except KeyError:
+            logging.warning("No Youtube tokens for episode %s", episode_id)
+            return False
+
+        for episode_part, youtube_token in enumerate(youtube_tokens):
 
             if self.records.is_part_complete(episode_id, episode_part):
                 logging.info("Episode %s part %s was already downloaded", episode_id, episode_part)
@@ -830,6 +837,10 @@ class Backend(object):
         # type: (str, ) -> Tuple[List[JsonDict], List[JsonDict], List[JsonDict]]
         raise NotImplementedError
 
+    def get_episodes_by_youtube_token(self, youtube_tokens, sort_by=None, limit=None):
+        # type: (Iterable[str], Optional[str], Optional[int]) -> Iterator[JsonDict]
+        raise NotImplementedError
+
 
 class LiveBackend(Backend):
     def __init__(self):
@@ -978,6 +989,11 @@ class LiveBackend(Backend):
         episodes = result["episodes"]
         posts = result["blog"]
         return shows, episodes, posts
+
+    def get_episodes_by_youtube_token(self, youtube_tokens, sort_by=None, limit=None):
+        # type: (Iterable[str], Optional[str], Optional[int]) -> Iterator[JsonDict]
+
+        raise RuntimeError("Operation not yet supported by live backend")
 
 
 class LocalBackend(Backend):
@@ -1204,9 +1220,8 @@ class LocalBackend(Backend):
         # type: (Iterable[str], Optional[str], Optional[int]) -> Iterator[JsonDict]
 
         youtube_tokens = set(youtube_tokens)
-        episodes = self.db.collection("episodes")
         return sort_by_item(
-            episodes.filter(lambda doc: bool(set(doc["youtubeTokens"]) & youtube_tokens)), sort_by, limit
+            query_by_field_intersect(self.db, "episodes", "youtubeTokens", youtube_tokens), sort_by, limit
         )
 
 
