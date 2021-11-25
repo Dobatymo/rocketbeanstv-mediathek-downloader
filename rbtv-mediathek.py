@@ -36,8 +36,13 @@ from genutility.args import is_file
 from genutility.iter import progress
 from genutility.unqlite import query_by_field_intersect
 from rbtv import RBTVAPI, HTTPError, batch_iter, bohne_name_to_id, name_of_season, show_name_to_id
-from youtube_dl import YoutubeDL
-from youtube_dl.utils import DownloadError, UnavailableVideoError, sanitize_filename
+try:
+    from yt_dlp import YoutubeDL
+    from yt_dlp.utils import DownloadError, UnavailableVideoError, sanitize_filename
+except ImportError:
+    from youtube_dl import YoutubeDL
+    from youtube_dl.utils import DownloadError, UnavailableVideoError, sanitize_filename
+    warnings.warn("Using `youtube-dl`. For better performance please install `yt-dlp`.")
 
 if TYPE_CHECKING:
     from argparse import Namespace
@@ -454,14 +459,22 @@ class RBTVDownloader(object):
         all_done = True
         try:
             youtube_tokens = episode["youtubeTokens"]
+            other_tokens = []
         except KeyError:
-            logging.warning("No Youtube tokens for episode %s", episode_id)
-            return False
+            try:
+                youtube_tokens = [t["token"] for t in episode["tokens"] if t["type"] == "youtube"]
+                other_tokens = [t["token"] for t in episode["tokens"] if t["type"] != "youtube"]
+            except KeyError:
+                logging.warning("No Youtube tokens for episode %d: %s", episode_id, json.dumps(episode))
+                return False
+
+        if other_tokens:
+            logging.warning("Found %d non-youtube tokens for episode %d: %s", len(other_tokens), episode_id, other_tokens)
 
         for episode_part, youtube_token in enumerate(youtube_tokens):
 
             if self.records.is_part_complete(episode_id, episode_part):
-                logging.info("Episode %s part %s was already downloaded", episode_id, episode_part)
+                logging.info("Episode %d part %d was already downloaded", episode_id, episode_part)
                 continue
 
             if not youtube_token:
