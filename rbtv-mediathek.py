@@ -1,4 +1,4 @@
-from __future__ import annotations, generator_stop
+from __future__ import annotations
 
 import errno
 import json
@@ -14,21 +14,7 @@ from itertools import islice
 from operator import itemgetter
 from os import fspath, strerror
 from pathlib import Path
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    Callable,
-    Dict,
-    Iterable,
-    Iterator,
-    List,
-    Optional,
-    Sequence,
-    Set,
-    Tuple,
-    TypeVar,
-    Union,
-)
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, Iterator, List, Optional, Sequence, Set, Tuple, TypeVar
 
 from appdirs import user_data_dir
 from dateutil.parser import isoparse
@@ -36,12 +22,14 @@ from genutility.args import is_file
 from genutility.iter import progress
 from genutility.unqlite import query_by_field_intersect
 from rbtv import RBTVAPI, HTTPError, batch_iter, bohne_name_to_id, name_of_season, show_name_to_id
+
 try:
     from yt_dlp import YoutubeDL
     from yt_dlp.utils import DownloadError, UnavailableVideoError, sanitize_filename
 except ImportError:
     from youtube_dl import YoutubeDL
     from youtube_dl.utils import DownloadError, UnavailableVideoError, sanitize_filename
+
     warnings.warn("Using `youtube-dl`. For better performance please install `yt-dlp`.")
 
 if TYPE_CHECKING:
@@ -164,7 +152,7 @@ def is_in_season(episode: JsonDict) -> bool:
     return bool(episode.get("seasonId"))
 
 
-def parse_datetime(datestr: Optional[str]) -> Optional[datetime]:
+def parse_datetime(datestr: str | None) -> datetime | None:
 
     if not datestr:
         return None
@@ -186,9 +174,9 @@ class Records:
         self,
         episode_id: int,
         episode_part: int,
-        youtube_token: Optional[str] = None,
-        local_path: Optional[str] = None,
-        info: Optional[Dict[str, Any]] = None,
+        youtube_token: str | None = None,
+        local_path: str | None = None,
+        info: dict[str, Any] | None = None,
     ) -> None:
         raise NotImplementedError
 
@@ -213,7 +201,7 @@ class MemoryRecords(Records):
     all = "all"
 
     def __init__(self) -> None:
-        self.downloaded_episodes: Set[Union[int, Tuple[int, int]]] = set()
+        self.downloaded_episodes: set[int | tuple[int, int]] = set()
 
     def insert_episode(self, episode_id: int) -> None:
         self.downloaded_episodes.add(episode_id)
@@ -225,9 +213,9 @@ class MemoryRecords(Records):
         self,
         episode_id: int,
         episode_part: int,
-        youtube_token: Optional[str] = None,
-        local_path: Optional[str] = None,
-        info: Optional[Dict[str, Any]] = None,
+        youtube_token: str | None = None,
+        local_path: str | None = None,
+        info: dict[str, Any] | None = None,
     ) -> None:
         self.downloaded_episodes.add((episode_id, episode_part))
 
@@ -244,10 +232,10 @@ class PlaintextRecords(Records):
         self.record_file = open(path, "a", encoding="utf-8")
 
     @classmethod
-    def _parse_record_file(cls, path: str) -> Iterator[Union[int, Tuple[int, int]]]:
+    def _parse_record_file(cls, path: str) -> Iterator[int | tuple[int, int]]:
 
         try:
-            with open(path, "r", encoding="utf-8") as fr:
+            with open(path, encoding="utf-8") as fr:
                 for line in fr:
                     episode_id, episode_part = line.rstrip("\n").split(" ")
                     if episode_part == cls.all:
@@ -260,7 +248,7 @@ class PlaintextRecords(Records):
     def insert_episode(self, episode_id: int) -> None:
         self.downloaded_episodes.add(episode_id)
 
-        self.record_file.write("{} {}\n".format(episode_id, self.all))
+        self.record_file.write(f"{episode_id} {self.all}\n")
         self.record_file.flush()
 
     def is_episode_complete(self, episode_id: int) -> bool:
@@ -270,13 +258,13 @@ class PlaintextRecords(Records):
         self,
         episode_id: int,
         episode_part: int,
-        youtube_token: Optional[str] = None,
-        local_path: Optional[str] = None,
-        info: Optional[Dict[str, Any]] = None,
+        youtube_token: str | None = None,
+        local_path: str | None = None,
+        info: dict[str, Any] | None = None,
     ) -> None:
         self.downloaded_episodes.add((episode_id, episode_part))
 
-        self.record_file.write("{} {}\n".format(episode_id, episode_part))
+        self.record_file.write(f"{episode_id} {episode_part}\n")
         self.record_file.flush()
 
     def is_part_complete(self, episode_id: int, episode_part: int) -> bool:
@@ -333,9 +321,9 @@ class SqliteRecords(Records):
         self,
         episode_id: int,
         episode_part: int,
-        youtube_token: Optional[str] = None,
-        local_path: Optional[str] = None,
-        info: Optional[Dict[str, Any]] = None,
+        youtube_token: str | None = None,
+        local_path: str | None = None,
+        info: dict[str, Any] | None = None,
     ) -> None:
         with self.con:
             cur = self.con.cursor()
@@ -381,11 +369,10 @@ class SqliteRecords(Records):
     def execute(self, query, args=()):
         with self.con:
             cur = self.con.cursor()
-            for row in cur.execute(query, args):
-                yield row
+            yield from cur.execute(query, args)
 
 
-class RBTVDownloader(object):
+class RBTVDownloader:
     def __init__(
         self,
         backend: Backend,
@@ -393,10 +380,10 @@ class RBTVDownloader(object):
         basepath: Path = DEFAULT_BASEPATH,
         outdirtpl: str = DEFAULT_OUTDIRTPL,
         outtmpl: str = DEFAULT_OUTTMPL,
-        format: Optional[str] = DEFAULT_FORMAT,
+        format: str | None = DEFAULT_FORMAT,
         missing_value: str = DEFAULT_MISSING_VALUE,
         retries: int = DEFAULT_RETRIES,
-        cookiefile: Optional[str] = None,
+        cookiefile: str | None = None,
     ) -> None:
 
         self.backend = backend
@@ -469,7 +456,9 @@ class RBTVDownloader(object):
                 return False
 
         if other_tokens:
-            logging.warning("Found %d non-youtube tokens for episode %d: %s", len(other_tokens), episode_id, other_tokens)
+            logging.warning(
+                "Found %d non-youtube tokens for episode %d: %s", len(other_tokens), episode_id, other_tokens
+            )
 
         for episode_part, youtube_token in enumerate(youtube_tokens):
 
@@ -737,7 +726,7 @@ def find_in_columns(text, columns):
     return filter
 
 
-class Backend(object):
+class Backend:
     def __enter__(self):
         # type: () -> Backend
         return self
@@ -877,8 +866,7 @@ class LiveBackend(Backend):
 
         def episodes():
             for season_id in season_ids:
-                for episode in episode_iter(self.api.get_episodes_by_season(season_id)):
-                    yield episode
+                yield from episode_iter(self.api.get_episodes_by_season(season_id))
 
         return sort_by_item(episodes(), sort_by, limit)
 
@@ -904,8 +892,7 @@ class LiveBackend(Backend):
 
         def episodes():
             for show_id in show_ids:
-                for episode in episode_iter(iterfunc(show_id)):
-                    yield episode
+                yield from episode_iter(iterfunc(show_id))
 
         return sort_by_item(episodes(), sort_by, limit)
 
@@ -970,8 +957,7 @@ class LiveBackend(Backend):
 
             def episodes():
                 for bohne_id in bohne_ids:
-                    for episode in episode_iter(self.api.get_episodes_by_bohne(bohne_id)):
-                        yield episode
+                    yield from episode_iter(self.api.get_episodes_by_bohne(bohne_id))
 
         else:
 
@@ -1408,8 +1394,8 @@ def reorganize(args):
 
     with get_backend(args) as backend, SqliteRecords(args.record_path) as records:
         if args.subcommand == "list-incomplete-episodes":
-            episodes_parts = set(row[0] for row in records.execute("SELECT DISTINCT episode_id FROM parts;"))
-            episodes_full = set(row[0] for row in records.execute("SELECT DISTINCT episode_id FROM episodes;"))
+            episodes_parts = {row[0] for row in records.execute("SELECT DISTINCT episode_id FROM parts;")}
+            episodes_full = {row[0] for row in records.execute("SELECT DISTINCT episode_id FROM episodes;")}
 
             for episodes, message in [
                 (episodes_parts - episodes_full, "Episodes with missing parts ({})"),
@@ -1425,12 +1411,12 @@ def reorganize(args):
                 print(episode_id, episode_part, youtube_token, local_path)
 
         elif args.subcommand == "forget-missing-files":
-            forget: List[Tuple[int, int, str]] = []
+            forget: list[tuple[int, int, str]] = []
             for episode_id, episode_part, _, local_path, _ in records:
                 if not (args.basepath / local_path).exists():
                     forget.append((episode_id, episode_part, local_path))
 
-            episodes: Dict[int, List[str]] = defaultdict(list)  # mypy ignore redefine
+            episodes: dict[int, list[str]] = defaultdict(list)  # mypy ignore redefine
             for episode_id, _, local_path in forget:
                 episodes[episode_id].append(local_path)
 
@@ -1483,7 +1469,7 @@ def reorganize(args):
 
             for token, paths in token2path.items():
 
-                episodes: Optional[List[dict]] = token2episode.get(token)
+                episodes: list[dict] | None = token2episode.get(token)
                 if episodes is None:
                     logging.error("Could not find YouTube token %s", token)
                     continue

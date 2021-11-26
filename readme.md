@@ -2,7 +2,7 @@
 
 ## Installation
 
-Install Python 3.6 (or newer) from <https://www.python.org/downloads/>.
+Install Python 3.7 (or newer) from <https://www.python.org/downloads/>.
 - If you downloaded the `rbtv-mediathek.pyz` file from the release section, just call it from the command line.
 Note: If you want to use `--backend local` (currently the default) you still need to `py -m pip install unqlite` because C modules are not supported within zipapps.
 - Otherwise install the dependencies with `py -m pip install -r requirements.txt` and run `rbtv-mediathek.py`.
