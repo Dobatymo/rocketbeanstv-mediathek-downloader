@@ -1,47 +1,54 @@
 repos:
-  - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: 'v4.0.1'
-    hooks:
-      - id: check-json
-      - id: check-yaml
-      - id: check-toml
-      - id: check-case-conflict
-      - id: check-added-large-files
-      - id: debug-statements
-      - id: mixed-line-ending
-        args: ["--fix=no"]
-      - id: requirements-txt-fixer
-      - id: trailing-whitespace
-        args: ["--markdown-linebreak-ext=md"]
-      - id: end-of-file-fixer
-  - repo: https://github.com/asottile/pyupgrade
-    rev: 'v2.29.1'
-    hooks:
-      - id: pyupgrade
-        args: ["--py37-plus"]
-  - repo: https://github.com/psf/black
-    rev: '21.11b1'
-    hooks:
-      - id: black
-        language_version: python3 # Should be a command that runs python3.6+
-  - repo: https://github.com/PyCQA/isort
-    rev: '5.10.1'
-    hooks:
-      - id: isort
-        language_version: python3
-  - repo: https://gitlab.com/pycqa/flake8
-    rev: '4.0.1'
-    hooks:
-      - id: flake8
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: 'v0.910'
-    hooks:
-      - id: mypy
-        args: ["--ignore-missing-imports", "--install-types", "--non-interactive"]
-        additional_dependencies:
-          - appdirs>=1.4.4
-          - genutility>=0.0.70
-          - python-dateutil
-          - rbtv-api>=0.0.8
-          - unqlite>=0.9.2
-          - youtube-dl>=2021.6.6
+- repo: https://github.com/pre-commit/pre-commit-hooks
+  rev: v4.4.0
+  hooks:
+  - id: check-json
+  - id: check-yaml
+  - id: check-toml
+  - id: check-case-conflict
+  - id: check-added-large-files
+  - id: debug-statements
+  - id: mixed-line-ending
+    args: [--fix=no]
+  - id: requirements-txt-fixer
+  - id: trailing-whitespace
+    args: [--markdown-linebreak-ext=md]
+  - id: end-of-file-fixer
+- repo: https://github.com/macisamuele/language-formatters-pre-commit-hooks
+  rev: v2.10.0
+  hooks:
+  - id: pretty-format-yaml
+    args: [--autofix]
+- repo: https://github.com/asottile/pyupgrade
+  rev: v3.10.1
+  hooks:
+  - id: pyupgrade
+    args: [--py37-plus]
+- repo: https://github.com/psf/black
+  rev: 23.7.0
+  hooks:
+  - id: black
+- repo: https://github.com/PyCQA/isort
+  rev: 5.12.0
+  hooks:
+  - id: isort
+- repo: https://github.com/pycqa/flake8
+  rev: 6.1.0
+  hooks:
+  - id: flake8
+- repo: https://github.com/pre-commit/mirrors-mypy
+  rev: v1.5.0
+  hooks:
+  - id: mypy
+    args: [--ignore-missing-imports, --install-types, --non-interactive]
+    additional_dependencies:
+    - genutility[args,iter,unqlite]==0.0.102
+    - platformdirs==3.5.0
+    - python-dateutil==2.8.2
+    - rbtv-api==0.0.8
+    - unqlite==0.9.3
+    - yt-dlp==2022.10.04
+- repo: https://github.com/Yelp/detect-secrets
+  rev: v1.4.0
+  hooks:
+  - id: detect-secrets
