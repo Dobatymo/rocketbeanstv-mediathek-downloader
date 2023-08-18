@@ -22,7 +22,7 @@ genutility = {version = ">=0.0.102", extras = ["args", "iter", "unqlite"]}
 python-dateutil = "^2.8.2"
 rbtv-api = "^0.0.8"
 unqlite = "^0.9.3"
-yt-dlp = "^2022.10.04"
+yt-dlp = "^2023.7.6"
 
 [tool.poetry.dev-dependencies]
 
