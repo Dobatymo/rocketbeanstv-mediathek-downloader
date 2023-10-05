@@ -670,7 +670,7 @@ class LocalBackend(Backend):
 
             episodes.create()
             for show in progress(
-                unqlite_all(shows), extra_info_callback=lambda i, l: "processing shows", disable=not verbose
+                unqlite_all(shows), extra_info_callback=lambda total, length: "processing shows", disable=not verbose
             ):
                 show_id = show["id"]
                 try:
