@@ -1,18 +1,33 @@
+[build-system]
+build-backend = "poetry.core.masonry.api"
+requires = [
+  "poetry-core>=1",
+]
+
 [tool.poetry]
 name = "rbtv-dl"
 version = "0.8"
-authors = ["Dobatymo <Dobatymo@users.noreply.github.com>"]
+authors = [
+  "Dobatymo <Dobatymo@users.noreply.github.com>",
+]
 description = "Rocket Beans TV Mediathek downloader and browser"
 packages = [
-    { include = "rbtv_dl.py" },
+  { include = "rbtv_dl.py" },
 ]
 
 [tool.poetry.dependencies]
 python = "^3.7"
+genutility = { version = ">=0.0.104", extras = [
+  "args",
+  "iter",
+  "rich",
+  "unqlite",
+] }
 platformdirs = ">=3.5.0"
-genutility = {version = ">=0.0.102", extras = ["args", "iter", "unqlite"]}
 python-dateutil = ">=2.8.2"
 rbtv-api = ">=0.0.8"
+rich = ">=13.0.0"
+typing-extensions = ">=4.0.0"
 unqlite = ">=0.9.3"
 yt-dlp = ">=2022.10.04"
 
@@ -21,13 +36,19 @@ yt-dlp = ">=2022.10.04"
 [tool.black]
 line-length = 120
 
+[tool.ruff]
+line-length = 120
+
+lint.extend-select = [
+  "B",
+  "I",
+]
+
 [tool.isort]
 profile = "black"
-src_paths = ["."]
 line_length = 120
 
-[build-system]
-build-backend = "poetry.core.masonry.api"
-requires = [
-  "poetry-core>=1",
+[tool.bandit]
+skips = [
+  "B101",
 ]

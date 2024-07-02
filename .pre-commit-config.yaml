@@ -1,6 +1,6 @@
 repos:
 - repo: https://github.com/pre-commit/pre-commit-hooks
-  rev: v4.4.0
+  rev: v4.6.0
   hooks:
   - id: check-added-large-files
   - id: check-case-conflict
@@ -18,44 +18,51 @@ repos:
   - id: trailing-whitespace
     args: [--markdown-linebreak-ext=md]
 - repo: https://github.com/macisamuele/language-formatters-pre-commit-hooks
-  rev: v2.10.0
+  rev: v2.13.0
   hooks:
   - id: pretty-format-yaml
     args: [--autofix]
 - repo: https://github.com/tox-dev/pyproject-fmt
-  rev: 1.2.0
+  rev: 2.1.3
   hooks:
   - id: pyproject-fmt
 - repo: https://github.com/asottile/pyupgrade
-  rev: v3.14.0
+  rev: v3.16.0
   hooks:
   - id: pyupgrade
     args: [--py37-plus]
-- repo: https://github.com/psf/black
-  rev: 23.9.1
+- repo: https://github.com/psf/black-pre-commit-mirror
+  rev: 24.4.2
   hooks:
   - id: black
 - repo: https://github.com/PyCQA/isort
-  rev: 5.12.0
+  rev: 5.13.2
   hooks:
   - id: isort
 - repo: https://github.com/pycqa/flake8
-  rev: 6.1.0
+  rev: 7.1.0
   hooks:
   - id: flake8
+    additional_dependencies:
+    - flake8-annotations
+    - flake8-bugbear
+    - flake8-eradicate
+    - flake8-mutable
+    - flake8-simplify
 - repo: https://github.com/pre-commit/mirrors-mypy
-  rev: v1.5.1
+  rev: v1.10.1
   hooks:
   - id: mypy
     args: [--ignore-missing-imports, --install-types, --non-interactive]
     additional_dependencies:
-    - genutility[args,iter,unqlite]==0.0.102
+    - genutility[args,iter,rich,unqlite]==0.0.104
     - platformdirs==3.5.0
     - python-dateutil==2.8.2
     - rbtv-api==0.0.8
+    - typing-extensions>=4.0.0
     - unqlite==0.9.3
     - yt-dlp==2022.10.04
 - repo: https://github.com/Yelp/detect-secrets
-  rev: v1.4.0
+  rev: v1.5.0
   hooks:
   - id: detect-secrets

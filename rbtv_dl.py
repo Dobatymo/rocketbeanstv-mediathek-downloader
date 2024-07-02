@@ -31,19 +31,16 @@ from typing import (
 
 from dateutil.parser import isoparse
 from genutility.args import is_file
-from genutility.iter import progress
+from genutility.rich import Progress
 from genutility.unqlite import query_by_field_intersect
 from platformdirs import user_data_dir
 from rbtv import RBTVAPI, HTTPError, batch_iter, bohne_name_to_id, name_of_season, show_name_to_id
-
-try:
-    from yt_dlp import YoutubeDL
-    from yt_dlp.utils import DownloadError, UnavailableVideoError, sanitize_filename
-except ImportError:
-    from youtube_dl import YoutubeDL
-    from youtube_dl.utils import DownloadError, UnavailableVideoError, sanitize_filename
-
-    warnings.warn("Using `youtube-dl`. For better performance please install `yt-dlp`.")
+from rich.progress import Progress as RichProgress
+from typing_extensions import Self
+from yt_dlp import YoutubeDL
+from yt_dlp.utils import DownloadError, UnavailableVideoError, sanitize_filename
+from rich.logging import RichHandler
+from rich.highlighter import NullHighlighter
 
 if TYPE_CHECKING:
     import unqlite
@@ -53,7 +50,7 @@ try:
 except ImportError:
     DEFAULT_BACKEND = "live"
     ALL_BACKENDS = ["live"]
-    warnings.warn("Local backend not available. Install unqlite.")
+    warnings.warn("Local backend not available. Install unqlite.", stacklevel=1)
 else:
     DEFAULT_BACKEND = "local"
     ALL_BACKENDS = ["local", "live"]
@@ -186,7 +183,7 @@ class Records:
     def close(self) -> None:
         pass
 
-    def __enter__(self):
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *args):
@@ -367,7 +364,7 @@ class SqliteRecords(Records):
 
 
 class Backend:
-    def __enter__(self) -> "Backend":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *args):
@@ -669,24 +666,29 @@ class LocalBackend(Backend):
             shows.store(all_shows)
 
             episodes.create()
-            for show in progress(
-                unqlite_all(shows), extra_info_callback=lambda total, length: "processing shows", disable=not verbose
-            ):
-                show_id = show["id"]
-                try:
-                    all_episodes = list(episode_iter(api.get_episodes_by_show(show_id)))
-                except HTTPError as e:
-                    if e.response.status_code == 400:
-                        logging.warning(
-                            "Failed to get episodes from show id=%s title=%s podcast=%s",
-                            show_id,
-                            show["title"],
-                            show["isTruePodcast"],
-                        )
+
+            with RichProgress() as progress:
+                p = Progress(progress)
+                for show in p.track(
+                    unqlite_all(shows),
+                    description="Processing shows...",
+                    disable=not verbose,
+                ):
+                    show_id = show["id"]
+                    try:
+                        all_episodes = list(episode_iter(api.get_episodes_by_show(show_id)))
+                    except HTTPError as e:
+                        if e.response.status_code == 400:
+                            logging.warning(
+                                "Failed to get episodes from show id=%s title=%s podcast=%s",
+                                show_id,
+                                show["title"],
+                                show["isTruePodcast"],
+                            )
+                        else:
+                            raise
                     else:
-                        raise
-                else:
-                    episodes.store(all_episodes)
+                        episodes.store(all_episodes)
 
             bohnen.create()
             all_bohnen = list(api.get_bohnen_portraits())
@@ -699,7 +701,7 @@ class LocalBackend(Backend):
     def close(self) -> None:
         self.db.close()
 
-    def __enter__(self) -> "LocalBackend":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *args):
@@ -1336,7 +1338,7 @@ def reorganize(args: Namespace) -> None:
                     print_episode_short(episode, season)
 
         elif args.subcommand == "list-files":
-            for episode_id, episode_part, youtube_token, local_path, info in records:
+            for episode_id, episode_part, youtube_token, local_path, _info in records:
                 print(episode_id, episode_part, youtube_token, local_path)
 
         elif args.subcommand == "forget-missing-files":
@@ -1487,12 +1489,12 @@ def main() -> None:
     parser_a.add_argument(
         "--outtmpl",
         default=DEFAULT_OUTTMPL,
-        help="Output file path relative to output folder. Can include the same placeholders as '--outdirtpl' as well as youtube-dl placeholders. See youtube-dl output template: https://github.com/ytdl-org/youtube-dl#output-template",
+        help="Output file path relative to output folder. Can include the same placeholders as '--outdirtpl' as well as yt-dlp placeholders. See yt-dlp output template: https://github.com/yt-dlp/yt-dlp?tab=readme-ov-file#output-template",
     )
     parser_a.add_argument(
         "--format",
         default=DEFAULT_FORMAT,
-        help="Video/audio format. Defaults to 'bestvideo+bestaudio' with fallback to 'best'. See youtube-dl format selection: https://github.com/ytdl-org/youtube-dl#format-selection",
+        help="Video/audio format. Defaults to 'bestvideo+bestaudio' with fallback to 'best'. See yt-dlp format selection: https://github.com/yt-dlp/yt-dlp?tab=readme-ov-file#format-selection",
     )
     parser_a.add_argument(
         "--missing-value", default=DEFAULT_MISSING_VALUE, help="Value used for --outdirtpl if field is not available."
@@ -1585,10 +1587,13 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    handler = RichHandler(log_time_format="%Y-%m-%d %H-%M-%S%Z", highlighter=NullHighlighter())
+    FORMAT = "%(message)s"
+
     if args.verbose:
-        logging.basicConfig(level=logging.DEBUG)
+        logging.basicConfig(level=logging.DEBUG, format=FORMAT, handlers=[handler])
     else:
-        logging.basicConfig(level=logging.INFO)
+        logging.basicConfig(level=logging.INFO, format=FORMAT, handlers=[handler])
 
     if args.command == "download":
         if args.cookies:
@@ -1605,6 +1610,8 @@ def main() -> None:
 
         try:
             download(args)
+        except ValueError as e:
+            parser.error(str(e))
         except FileNotFoundError as e:
             parser.error(f"{e}. Run `dump` first.")
 
@@ -1620,6 +1627,8 @@ def main() -> None:
 
         try:
             browse(args)
+        except ValueError as e:
+            parser.error(str(e))
         except FileNotFoundError as e:
             parser.error(f"{e}. Run `dump` first.")
 
