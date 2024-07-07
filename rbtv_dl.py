@@ -8,7 +8,7 @@ import warnings
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser, ArgumentTypeError, Namespace
 from collections import defaultdict
 from datetime import datetime
-from functools import lru_cache
+from functools import lru_cache, wraps
 from itertools import islice
 from operator import itemgetter
 from os import fspath, strerror
@@ -35,12 +35,12 @@ from genutility.rich import Progress
 from genutility.unqlite import query_by_field_intersect
 from platformdirs import user_data_dir
 from rbtv import RBTVAPI, HTTPError, batch_iter, bohne_name_to_id, name_of_season, show_name_to_id
+from rich.highlighter import NullHighlighter
+from rich.logging import RichHandler
 from rich.progress import Progress as RichProgress
 from typing_extensions import Self
 from yt_dlp import YoutubeDL
 from yt_dlp.utils import DownloadError, UnavailableVideoError, sanitize_filename
-from rich.logging import RichHandler
-from rich.highlighter import NullHighlighter
 
 if TYPE_CHECKING:
     import unqlite
@@ -643,6 +643,7 @@ class LocalBackend(Backend):
             raise FileNotFoundError(errno.ENOENT, strerror(errno.ENOENT), fspath(path))
 
         self.db = UnQLite(fspath(path), flags=self.UNQLITE_OPEN_READONLY)
+        self.get_season = lru_cache(maxsize=128)(self.get_season)
 
     @classmethod
     def create(cls, path: Path, verbose: bool = False) -> None:
@@ -712,7 +713,6 @@ class LocalBackend(Backend):
         episodes = self.db.collection("episodes")
         return episodes.filter(lambda doc: doc["id"] in episode_ids)
 
-    @lru_cache(maxsize=128)
     def get_season(self, show_id: int, season_id: int) -> JsonDict:
         shows = self.db.collection("shows")
         show = one(shows.filter(lambda doc: doc["id"] == show_id))
@@ -855,6 +855,15 @@ class LocalBackend(Backend):
         )
 
 
+def kwargspartial(func: Callable, *args, **bind_kwargs: Any) -> Callable:
+    @wraps(func)
+    def inner(**kwargs):
+        bind_kwargs.update(kwargs)
+        return func(*args, bind_kwargs)
+
+    return inner
+
+
 class RBTVDownloader:
     def __init__(
         self,
@@ -969,49 +978,73 @@ class RBTVDownloader:
                 logging.error(
                     "Downloading episode id=%s (%s) failed. HTTP Error 429: Too Many Requests: %s. Waiting for %s seconds.",
                     episode_id,
-                    url,
+                    url,  # noqa: B023
                     msg,
                     TOO_MANY_REQUESTS_DELAY,
                 )
                 time.sleep(TOO_MANY_REQUESTS_DELAY)
 
             errors: Dict[str, Callable[..., None]] = {
-                r"ERROR: Unsupported URL": lambda: logging.error(
-                    "Downloading episode id=%s (%s) is not supported", episode_id, url
+                r"ERROR: Unsupported URL": kwargspartial(
+                    logging.error,
+                    "Downloading episode id=%(episode_id)s (%(url)s) is not supported",
+                    episode_id=episode_id,
+                    url=url,
                 ),  # UnsupportedError
-                r"ERROR: Incomplete YouTube ID": lambda: logging.error(
-                    "YouTube ID of episode id=%s (%s) looks incomplete", episode_id, youtube_token
+                r"ERROR: Incomplete YouTube ID": kwargspartial(
+                    logging.error,
+                    "YouTube ID of episode id=%(episode_id)s (%(youtube_token)s) looks incomplete",
+                    episode_id=episode_id,
+                    youtube_token=youtube_token,
                 ),  # ExtractorError
-                r"ERROR: Did not get any data blocks": lambda: logging.error(
-                    "Downloading episode id=%s (%s) failed. Did not get any data blocks.", episode_id, url
+                r"ERROR: Did not get any data blocks": kwargspartial(
+                    logging.error,
+                    "Downloading episode id=%(episode_id)s (%(url)s) failed. Did not get any data blocks.",
+                    episode_id=episode_id,
+                    url=url,
                 ),
-                r"ERROR: [a-zA-Z0-9\-_]+: YouTube said: Unable to extract video data": lambda: logging.error(
-                    "Downloading episode id=%s (%s) failed. Unable to extract video data.", episode_id, url
+                r"ERROR: [a-zA-Z0-9\-_]+: YouTube said: Unable to extract video data": kwargspartial(
+                    logging.error,
+                    "Downloading episode id=%(episode_id)s (%(url)s) failed. Unable to extract video data.",
+                    episode_id,
+                    url=url,
                 ),  # ExtractorError
-                r"ERROR: unable to download video data": lambda: logging.error(
-                    "Downloading episode id=%s (%s) failed. Unable to download video data.", episode_id, url
+                r"ERROR: unable to download video data": kwargspartial(
+                    logging.error,
+                    "Downloading episode id=%(episode_id)s (%(url)s) failed. Unable to download video data.",
+                    episode_id=episode_id,
+                    url=url,
                 ),  # ExtractorError
-                r"ERROR: giving up after (?P<num>[0-9]+) retries": lambda num: logging.error(
-                    "Downloading episode id=%s (%s) failed. Max retries (%s) exceeded.", episode_id, url, num
+                r"ERROR: giving up after (?P<num>[0-9]+) retries": kwargspartial(
+                    logging.error,
+                    "Downloading episode id=%(episode_id)s (%(url)s) failed. Max retries (%(num)s) exceeded.",
+                    episode_id=episode_id,
+                    url=url,
                 ),  # DownloadError
-                r"ERROR: This video is not available in your country.": lambda: logging.error(
-                    "Downloading episode id=%s (%s) failed. Video geo-blocked.", episode_id, url
+                r"ERROR: This video is not available in your country.": kwargspartial(
+                    logging.error,
+                    "Downloading episode id=%(episode_id)s (%(url)s) failed. Video geo-blocked.",
+                    episode_id=episode_id,
+                    url=url,
                 ),  # ExtractorError
                 r"ERROR: Unable to download webpage: HTTP Error 429: Too Many Requests (?P<msg>.*)": error_too_many_requests,  # DownloadError
-                r"ERROR: Video unavailable\nThis video contains content from (?P<owner>.*), who has blocked it on copyright grounds\.": lambda owner: logging.error(
-                    "Downloading episode id=%s (%s) failed. Video blocked by %s on copyright grounds.",
-                    episode_id,
-                    url,
-                    owner,
+                r"ERROR: Video unavailable\nThis video contains content from (?P<owner>.*), who has blocked it on copyright grounds\.": kwargspartial(
+                    logging.error,
+                    "Downloading episode id=%(episode_id)s (%(url)s) failed. Video blocked by %(owner)s on copyright grounds.",
+                    episode_id=episode_id,
+                    url=url,
                 ),  # DownloadError
-                r"ERROR: Video unavailable\nThis video contains content from (?P<owner>.*), who has blocked it in your country on copyright grounds\.": lambda owner: logging.error(
-                    "Downloading episode id=%s (%s) failed. Video blocked by %s in this country on copyright grounds.",
-                    episode_id,
-                    url,
-                    owner,
+                r"ERROR: Video unavailable\nThis video contains content from (?P<owner>.*), who has blocked it in your country on copyright grounds\.": kwargspartial(
+                    logging.error,
+                    "Downloading episode id=%(episode_id)s (%(url)s) failed. Video blocked by %(owner)s in this country on copyright grounds.",
+                    episode_id=episode_id,
+                    url=url,
                 ),  # DownloadError
-                r"ERROR: Video unavailable\nThis video is private\.": lambda owner: logging.error(
-                    "Downloading episode id=%s (%s) failed. Video is private.", episode_id, url
+                r"ERROR: Video unavailable\nThis video is private\.": kwargspartial(
+                    logging.error,
+                    "Downloading episode id=%(episode_id)s (%(url)s) failed. Video is private.",
+                    episode_id=episode_id,
+                    url=url,
                 ),  # DownloadError
             }
 
