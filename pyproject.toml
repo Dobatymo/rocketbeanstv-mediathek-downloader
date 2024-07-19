@@ -16,7 +16,7 @@ packages = [
 ]
 
 [tool.poetry.dependencies]
-python = "^3.7"
+python = ">=3.8,<4.0"
 genutility = { version = ">=0.0.104", extras = [
   "args",
   "iter",
