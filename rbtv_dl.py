@@ -5,7 +5,7 @@ import re
 import sqlite3
 import time
 import warnings
-from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser, ArgumentTypeError, Namespace
+from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser, Namespace
 from collections import defaultdict
 from datetime import datetime
 from functools import lru_cache, wraps
@@ -30,7 +30,7 @@ from typing import (
 )
 
 from dateutil.parser import isoparse
-from genutility.args import is_file
+from genutility.args import is_file, non_negative_int, positive_int
 from genutility.rich import Progress
 from genutility.unqlite import query_by_field_intersect
 from platformdirs import user_data_dir
@@ -72,7 +72,7 @@ DEFAULT_OUTTMPL = "%(title)s-%(id)s.%(format_id)s.%(ext)s"
 DEFAULT_MISSING_VALUE = "-"
 DEFAULT_RETRIES = 10
 TOO_MANY_REQUESTS_DELAY = 60
-DEFAULT_TOKEN_REGEX = r"^.*-([0-9A-Za-z_-]{10}[048AEIMQUYcgkosw])\.[0-9+]+\.[0-9a-zA-Z]{3,4}$"
+DEFAULT_TOKEN_REGEX = r"^.*-([0-9A-Za-z_-]{10}[048AEIMQUYcgkosw])\.[0-9+]+\.[0-9a-zA-Z]{3,4}$"  # noqa: S105
 
 # similar to "bestvideo+bestaudio/best", but with improved fallback to "best"
 # if separate streams are not possible
@@ -127,16 +127,6 @@ def opt_int(s: Optional[str]) -> Optional[int]:
         return None
     else:
         return int(s)
-
-
-def posint(s: str) -> int:
-    number = int(s)
-
-    if number <= 0:
-        msg = f"{s} is not strictly greater than 0"
-        raise ArgumentTypeError(msg)
-
-    return number
 
 
 def episode_iter(eps_combined: JsonDict) -> Iterator[JsonDict]:
@@ -316,13 +306,19 @@ class SqliteRecords(Records):
         local_path: Optional[str] = None,
         info: Optional[Dict[str, Any]] = None,
     ) -> None:
+        try:
+            _info = json.dumps(info, ensure_ascii=False)
+        except TypeError as e:
+            logging.error("Failed to dump %r to JSON: %s", info, e)
+            raise
+
         with self.con:
             cur = self.con.cursor()
             cur.execute(
                 """INSERT INTO parts (episode_id, episode_part, youtube_token, local_path, info)
                 VALUES (?, ?, ?, ?, ?);
             """,
-                (episode_id, episode_part, youtube_token, local_path, json.dumps(info, ensure_ascii=False)),
+                (episode_id, episode_part, youtube_token, local_path, _info),
             )  # needs json(?)
 
     def is_part_complete(self, episode_id: int, episode_part: int) -> bool:
@@ -1485,16 +1481,22 @@ def main() -> None:
 
     parser_a = subparsers.add_parser("download", help="download files", formatter_class=ArgumentDefaultsHelpFormatter)
     group = parser_a.add_mutually_exclusive_group(required=True)
-    group.add_argument("--episode-id", metavar="ID", nargs="+", type=int, help="Download these episodes")
-    group.add_argument("--season-id", metavar="ID", nargs="+", type=int, help="Download all episodes of these seasons")
-    group.add_argument("--show-id", metavar="ID", nargs="+", type=int, help="Download all episodes of these shows")
+    group.add_argument("--episode-id", metavar="ID", nargs="+", type=positive_int, help="Download these episodes")
+    group.add_argument(
+        "--season-id", metavar="ID", nargs="+", type=positive_int, help="Download all episodes of these seasons"
+    )
+    group.add_argument(
+        "--show-id", metavar="ID", nargs="+", type=positive_int, help="Download all episodes of these shows"
+    )
     group.add_argument("--show-name", metavar="NAME", nargs="+", type=str, help="Download all episodes of these shows")
     group.add_argument("--all-shows", action="store_true", help="Download all episodes of all shows")
-    group.add_argument("--bohne-id", metavar="ID", nargs="+", type=int, help="Download all episodes by these people")
+    group.add_argument(
+        "--bohne-id", metavar="ID", nargs="+", type=positive_int, help="Download all episodes by these people"
+    )
     group.add_argument(
         "--bohne-name", metavar="NAME", nargs="+", type=str, help="Download all episodes by these people"
     )
-    group.add_argument("--blog-id", metavar="ID", nargs="+", type=int, help="Download blog post")
+    group.add_argument("--blog-id", metavar="ID", nargs="+", type=positive_int, help="Download blog post")
     group.add_argument("--all-blog", action="store_true", help="Download all blog posts")
     parser_a.add_argument(
         "--unsorted-only",
@@ -1504,7 +1506,7 @@ def main() -> None:
     parser_a.add_argument(
         "--bohne-num",
         metavar="N",
-        type=posint,
+        type=positive_int,
         default=1,
         help=f"Download episodes with at least N of the people specified by {bohne_params} present at the same time",
     )
@@ -1540,7 +1542,7 @@ def main() -> None:
         help="File path where successful downloads are recorded. These episodes will be skipped if downloaded again.",
     )
     parser_a.add_argument(
-        "--retries", metavar="N", default=DEFAULT_RETRIES, type=int, help="Retry failed downloads N times."
+        "--retries", metavar="N", default=DEFAULT_RETRIES, type=non_negative_int, help="Retry failed downloads N times."
     )
     parser_a.add_argument(
         "--cookies", type=is_file, default=None, help="File name where cookies should be read from and dumped to."
@@ -1548,18 +1550,20 @@ def main() -> None:
 
     parser_b = subparsers.add_parser("browse", help="browse mediathek", formatter_class=ArgumentDefaultsHelpFormatter)
     group = parser_b.add_mutually_exclusive_group(required=True)
-    group.add_argument("--episode-id", metavar="ID", nargs="+", type=int, help="Show episode info")
-    group.add_argument("--season-id", metavar="ID", nargs="+", type=int, help="Show season info")
-    group.add_argument("--show-id", metavar="ID", nargs="+", type=int, help="Show show info")
+    group.add_argument("--episode-id", metavar="ID", nargs="+", type=positive_int, help="Show episode info")
+    group.add_argument("--season-id", metavar="ID", nargs="+", type=positive_int, help="Show season info")
+    group.add_argument("--show-id", metavar="ID", nargs="+", type=positive_int, help="Show show info")
     group.add_argument("--show-name", metavar="NAME", nargs="+", type=str, help="Show show info")
     group.add_argument("--all-shows", action="store_true", help="Show a list of all shows")
-    group.add_argument("--bohne-id", metavar="ID", nargs="+", type=int, help="Show bohne info")
+    group.add_argument("--bohne-id", metavar="ID", nargs="+", type=positive_int, help="Show bohne info")
     group.add_argument("--bohne-name", metavar="NAME", nargs="+", type=str, help="Show bohne info")
     group.add_argument("--all-bohnen", action="store_true", help="Show a list of all Bohnen")
-    group.add_argument("--blog-id", metavar="ID", nargs="+", type=int, help="Show blog post info")
+    group.add_argument("--blog-id", metavar="ID", nargs="+", type=positive_int, help="Show blog post info")
     group.add_argument("--all-blog", action="store_true", help="Show all blog posts")
     group.add_argument("--search", type=str, help="Search shows and episodes")
-    parser_b.add_argument("--limit", metavar="N", type=int, default=None, help="Limit list output to N items")
+    parser_b.add_argument(
+        "--limit", metavar="N", type=non_negative_int, default=None, help="Limit list output to N items"
+    )
     parser_b.add_argument(
         "--sort-by", type=str, choices=("id", "title", "showName", "firstBroadcastdate"), help="Sort output"
     )
@@ -1571,7 +1575,7 @@ def main() -> None:
     parser_b.add_argument(
         "--bohne-num",
         metavar="N",
-        type=posint,
+        type=positive_int,
         default=1,
         help=f"Show episodes with at least N of the people specified by {bohne_params} present at the same time",
     )
@@ -1632,9 +1636,6 @@ def main() -> None:
         if args.cookies:
             args.cookies = fspath(args.cookies)
 
-        if args.bohne_num <= 0:
-            parser.error("--bohne-num must be strictly greater than 0")
-
         if (args.bohne_num != 1 or args.bohne_exclusive) and not (args.bohne_id or args.bohne_name):
             parser.error(f"--bohne-num and --bohne-exclusive must be used with {bohne_params}")
 
@@ -1649,9 +1650,6 @@ def main() -> None:
             parser.error(f"{e}. Run `dump` first.")
 
     elif args.command == "browse":
-        if args.bohne_num <= 0:
-            parser.error("--bohne-num must be strictly greater than 0")
-
         if (args.bohne_num != 1 or args.bohne_exclusive) and not (args.bohne_id or args.bohne_name):
             parser.error(f"--bohne-num and --bohne-exclusive must be used with {bohne_params}")
 
